@@ -15,10 +15,12 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -211,12 +213,134 @@ def save_accounts(store: dict[str, Any]) -> None:
 
 
 def _write_accounts(store: dict[str, Any]) -> None:
-    """Unlocked write; call only while holding _STORE_LOCK (or single-threaded)."""
-    ACCOUNTS_PATH.write_text(json.dumps(store, indent=2, ensure_ascii=False), encoding="utf-8")
+    """Unlocked atomic write; call only while holding _STORE_LOCK (or single-threaded).
+
+    Writes to a temp file in the same directory, fsyncs, then os.replace's onto
+    ACCOUNTS_PATH so a crash mid-write can never leave a truncated/half-written
+    pool file (the previous on-disk file stays intact until the replace)."""
+    data = json.dumps(store, indent=2, ensure_ascii=False).encode("utf-8")
+    parent = ACCOUNTS_PATH.parent
+    fd, tmp = tempfile.mkstemp(prefix=".accounts-", suffix=".tmp", dir=parent)
     try:
-        os.chmod(ACCOUNTS_PATH, 0o600)
-    except OSError:
-        pass
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, ACCOUNTS_PATH)   # atomic on same FS (tmp lives in parent dir)
+    except BaseException:
+        # KeyboardInterrupt mid-write must still clean up the temp file.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# --- pending recovery -------------------------------------------------
+# When the save right after a registration fails (disk full / FS error / permission),
+# the freshly-registered account would be lost: it is in-memory only and the caller's
+# except just logs + marks slots FAIL. We salvage it to a sidecar append-only jsonl
+# and replay it on the next load_accounts() — same self-heal-on-load pattern as
+# migrate_session_if_needed. Path is derived at call time so selfcheck's
+# stt.ACCOUNTS_PATH reassignment keeps working (NOT a module-level constant).
+
+def _pending_path() -> pathlib.Path:
+    return ACCOUNTS_PATH.parent / (ACCOUNTS_PATH.name + ".pending.jsonl")
+
+
+def queue_pending_account(account: dict[str, Any], reason: str = "") -> bool:
+    """Last-resort salvage: append a registered account to the pending jsonl when
+    the main accounts.json write failed. Never raises into the caller — a full disk
+    may also reject this write, in which case we can only warn."""
+    rec = {"account": account,
+           "queued_at": datetime.now(timezone.utc).isoformat(),
+           "reason": str(reason or "")}
+    line = json.dumps(rec, ensure_ascii=False) + "\n"
+    try:
+        path = _pending_path()
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        return True
+    except Exception as e:
+        print(f"warn: pending salvage failed for {account.get('email')}: {e!r}",
+              file=sys.stderr)
+        return False
+
+
+def persist_registered(store: dict[str, Any], account: dict[str, Any],
+                       keep_active: bool = False) -> None:
+    """Upsert a freshly-registered account and persist it; on write failure salvage
+    to the pending jsonl then raise SystemExit with a remedy.
+
+    All four registration save sites (run_register / refill_pool / cmd_pool_warm /
+    web register) route through here so the salvage logic is centralized.
+
+    keep_active=True restores store["active"] to its pre-upsert value before the
+    save, so a refill registration does not steal the active marker (upsert_account
+    itself sets store["active"] = account["email"]). Default False preserves the
+    existing behavior of run_register / cmd_pool_warm / web (new account stays
+    active). The SystemExit is caught by callers' except BaseException / except
+    SystemExit branches and by web's SystemExit→{"error"} handler."""
+    prev_active = store.get("active") if keep_active else None
+    with _STORE_LOCK:
+        upsert_account(store, account)          # sets store["active"] = account["email"]
+        if keep_active:
+            store["active"] = prev_active        # restore before save (refill semantics)
+        try:
+            _write_accounts(store)
+        except Exception as e:
+            queue_pending_account(account, reason=str(e))
+            raise SystemExit(
+                f"accounts.json 写入失败，账号 {account.get('email')} 已暂存到 "
+                f"{_pending_path().name}，下次启动自动恢复: {e!r}")
+
+
+def recover_pending(store: dict[str, Any]) -> dict[str, int]:
+    """Fold accounts.json.pending.jsonl back into the store; idempotent, no-op when
+    the file is absent. Upserts each parseable account (dedup by email via
+    upsert_account), persists once, and removes the pending file ONLY after a
+    successful save (a still-full disk keeps the pending intact for next time).
+    Returns {"restored": N, "skipped": M}."""
+    path = _pending_path()
+    if not path.exists():
+        return {"restored": 0, "skipped": 0}
+    restored = 0
+    skipped = 0
+    with path.open("r", encoding="utf-8") as fh:
+        for lineno, raw in enumerate(fh, 1):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                rec = json.loads(raw)
+                acct = rec["account"] if isinstance(rec, dict) else None
+                if not isinstance(acct, dict) or not acct.get("email"):
+                    raise ValueError("missing account/email")
+                upsert_account(store, acct)
+                restored += 1
+            except Exception as e:
+                skipped += 1
+                print(f"warn: pending line {lineno} skipped: {e!r}", file=sys.stderr)
+    if restored:
+        save_accounts(store)          # atomic persist of the folded-back accounts
+        try:
+            path.unlink()              # remove pending ONLY after a successful save
+        except OSError as e:
+            print(f"warn: recovered {restored} account(s) but could not remove "
+                  f"{path.name}: {e!r}", file=sys.stderr)
+        print(f"recovered {restored} pending account(s) into {ACCOUNTS_PATH.name}",
+              file=sys.stderr)
+    return {"restored": restored, "skipped": skipped}
 
 
 def migrate_session_if_needed() -> None:
@@ -240,8 +364,13 @@ def load_accounts() -> dict[str, Any]:
             store = json.load(fh)
         store.setdefault("accounts", [])
         store.setdefault("active", None)
-        return store
-    return {"accounts": [], "active": None}
+    else:
+        store = {"accounts": [], "active": None}
+    # Self-heal: fold back any accounts salvaged to the pending jsonl when a prior
+    # registration save failed. No-op when the file is absent. Mirrors the
+    # migrate_session_if_needed self-heal-on-load pattern.
+    recover_pending(store)
+    return store
 
 
 def upsert_account(store: dict[str, Any], account: dict[str, Any]) -> None:
@@ -543,13 +672,10 @@ def refill_pool(store: dict[str, Any], config_path: pathlib.Path) -> None:
     if not acfg["auto_refill"] or not has_temp_email_config(config_path):
         return
     from register import register_one  # lazy: register.py imports stt back
-    active = store.get("active")
     while fresh_count(store, acfg["fresh_threshold"]) < acfg["pool_target"]:
         _rlog("账号池低于目标，注册补充账号...")
         account = register_one()
-        upsert_account(store, account)
-        store["active"] = active
-        save_accounts(store)
+        persist_registered(store, account, keep_active=True)  # 保 active，落盘失败暂存 pending
 
 
 def filter_accounts(store: dict[str, Any], emails: list[str]) -> tuple[list[dict[str, Any]], bool]:
@@ -869,9 +995,7 @@ def run_plan_pipelined(plan, cfg, store, config_path, output_for, register_count
             try:
                 _rlog(f"注册缺口账号 {k + 1}/{register_count}")
                 acct = register_fn()
-                with _STORE_LOCK:  # 注册成功立刻落盘（一个 ~1 分钟，丢了最贵）
-                    upsert_account(store, acct)
-                    _write_accounts(store)
+                persist_registered(store, acct)  # 落盘+失败暂存 pending（一个 ~1 分钟，丢了最贵）
                 futures.append(ex.submit(run_group, acct, pending.get(k, [])))
             except BaseException as e:  # 停止后续注册；已在跑的组照常完成。
                 # 落盘/submit 失败也必须走这里：线程静默死掉会让绑定槽位的行
@@ -1280,8 +1404,7 @@ def cmd_pool_warm(args: argparse.Namespace) -> int:
         except (Exception, SystemExit) as e:
             _rlog(f"注册失败: {e}")
             raise
-        upsert_account(store, account)
-        save_accounts(store)
+        persist_registered(store, account)
 
 
 def cmd_pool_status(args: argparse.Namespace) -> int:

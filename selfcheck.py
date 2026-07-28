@@ -7,6 +7,7 @@ Pure asserts over stt.py + audio_split.py logic; mutated stt globals
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import shutil
 import sys
@@ -159,6 +160,59 @@ def run() -> int:
         assert stt.ACCOUNTS_PATH.exists(), "注册成功即落盘"
         assert len(done_flags) == 3 and done_flags.count(False) == 1, done_flags
         assert {a.get("email") for a in pused} == {"a", "n0"}
+
+        # --- A1 atomic write + A2 pending recovery (AC1-AC9) -----------------
+        # Isolate on a fresh file in the same tempdir so the outer rmtree still covers it.
+        a1a2_path = stt.ACCOUNTS_PATH.parent / "a1a2-accounts.json"
+        saved_path = stt.ACCOUNTS_PATH
+        stt.ACCOUNTS_PATH = a1a2_path
+        try:
+            # AC1: _write_accounts is atomic — valid JSON, no .tmp lingers on success
+            st = {"accounts": [], "active": None}
+            stt._write_accounts(st)
+            assert json.load(open(stt.ACCOUNTS_PATH, encoding="utf-8")) == st, "atomic write content"
+            assert not list(stt.ACCOUNTS_PATH.parent.glob("a1a2-*.tmp")), "tmp file leaked"
+            # AC2: save failure salvages to pending and raises SystemExit(remedy)
+            acct2 = {"email": "salv@x.y", "invalid": False, "created_at": 0.0,
+                     "refreshToken": "rt"}
+            orig_w = stt._write_accounts
+            def _boom(_s):
+                raise OSError("disk full")
+            stt._write_accounts = _boom
+            try:
+                stt.persist_registered(st, acct2)
+                assert False, "persist_registered should have raised SystemExit"
+            except SystemExit:
+                pass
+            finally:
+                stt._write_accounts = orig_w
+            assert stt._pending_path().exists(), "pending jsonl written on salvage"
+            assert "salv@x.y" in stt._pending_path().read_text(encoding="utf-8"), "pending has email"
+            assert any(a.get("email") == "salv@x.y" for a in st["accounts"]), "salvaged account upserted in-memory"
+            # AC5/AC6: recover_pending folds back, persists, removes pending; idempotent
+            st_back = {"accounts": [], "active": None}
+            r = stt.recover_pending(st_back)
+            assert r["restored"] >= 1 and r["skipped"] == 0, r
+            assert not stt._pending_path().exists(), "pending removed after successful recover"
+            assert any(a.get("email") == "salv@x.y" for a in st_back["accounts"]), "recovered into store"
+            assert json.load(open(stt.ACCOUNTS_PATH, encoding="utf-8"))["accounts"][0]["email"] == "salv@x.y", "recovered onto disk"
+            r2 = stt.recover_pending(st_back)
+            assert r2 == {"restored": 0, "skipped": 0}, r2
+            # AC9: keep_active=True preserves store["active"] in the saved file
+            st_keep = {"accounts": [{"email": "old@x.y", "invalid": False, "created_at": 0.0}],
+                       "active": "old@x.y"}
+            new_acct = {"email": "new@x.y", "invalid": False, "created_at": 0.0, "refreshToken": "rt"}
+            stt.persist_registered(st_keep, new_acct, keep_active=True)
+            assert st_keep["active"] == "old@x.y", f"keep_active restored active: {st_keep['active']}"
+            assert json.load(open(stt.ACCOUNTS_PATH, encoding="utf-8"))["active"] == "old@x.y", "saved file keeps old active"
+            assert any(a.get("email") == "new@x.y" for a in st_keep["accounts"]), "new account upserted under keep_active"
+            # default keep_active=False leaves the new account active (matches run_register/cmd_pool_warm/web)
+            st_def = {"accounts": [], "active": None}
+            stt.persist_registered(st_def, new_acct)
+            assert st_def["active"] == "new@x.y", f"default keep_active left new active: {st_def['active']}"
+            assert json.load(open(stt.ACCOUNTS_PATH, encoding="utf-8"))["active"] == "new@x.y", "default saved new active"
+        finally:
+            stt.ACCOUNTS_PATH = saved_path
     finally:
         shutil.rmtree(stt.ACCOUNTS_PATH.parent, ignore_errors=True)
         stt.ACCOUNTS_PATH = real_accounts_path

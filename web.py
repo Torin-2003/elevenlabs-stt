@@ -292,8 +292,7 @@ def do_register(target: int | None) -> dict:
             _reg_log(f"账号池 {fresh}/{tgt}，开始注册第 {_REG_PROGRESS['done'] + 1} 个账号")
             account = register.register_one()
             with _LOCK:
-                stt.upsert_account(store, account)
-                stt.save_accounts(store)
+                stt.persist_registered(store, account)
             _REG_PROGRESS["done"] += 1
             fresh = stt.fresh_count(store, acfg["fresh_threshold"])
         _reg_log(f"注册结束：账号池 {fresh}/{tgt}")
