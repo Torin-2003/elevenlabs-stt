@@ -9,7 +9,7 @@
 session.json
 accounts.json
 config.toml
-_tmp-sample.m4a
+_tmp-*.m4a
 out.srt
 out.vtt
 out/
