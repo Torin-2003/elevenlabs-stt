@@ -26,3 +26,4 @@ __pycache__/
 # Trellis internal dev workspace (specs, task archives, journals, framework
 # scaffold) — kept local, not published. Scrub from history before going public.
 .trellis/
+.gitattributes
