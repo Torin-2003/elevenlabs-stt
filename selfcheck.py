@@ -348,6 +348,7 @@ def run() -> int:
     _check_proxy_driver()
     _check_email_provider()
     _check_register_dispatch()
+    _check_register_orchestration()
 
     print("selfcheck ok")
     return 0
@@ -498,6 +499,96 @@ def _check_register_dispatch() -> None:
             assert "zzz" in str(e)
     finally:
         stt.register_config = orig
+
+
+def _check_register_orchestration() -> None:
+    import register
+    calls: list = []
+
+    class FakeWindow:
+        left = top = 0
+        width = height = 1000
+
+    class FakePlatform:
+        mod_key = "ctrl"
+        def launch_chrome(self, profile_dir, signup_url, proxy_url):
+            calls.append(("launch", proxy_url)); return None
+        def find_profile_window(self, profile_dir, timeout_s):
+            calls.append("find"); return FakeWindow()
+        def ensure_foreground(self, window):
+            calls.append("focus")
+        def kill_profile(self, profile_dir, popen):
+            calls.append("kill"); shutil.rmtree(profile_dir, ignore_errors=True)
+
+    class FakeProvider:
+        def create_address(self):
+            calls.append("create_addr")
+            return register.EmailAddress(address="e@t.co", token="jwt", raw={})
+        def poll_verification_link(self, addr, pattern, timeout_s, interval_s):
+            calls.append("poll")
+            return "https://elevenlabs.io/app/action?oobCode=Z"
+
+    # stub the parts that would touch the real OS / network, and the sleeps
+    saved = {n: getattr(register, n) for n in
+             ("_fill_signup_form", "_open_verify_link_and_confirm", "_sign_in")}
+    saved_stt = {n: getattr(stt, n) for n in
+                 ("account_from_password_signin", "authed_client", "refresh_credits",
+                  "cached_remaining")}
+    saved_sleep = time.sleep
+    register._fill_signup_form = lambda *a, **k: calls.append("fill")
+    register._open_verify_link_and_confirm = lambda *a, **k: calls.append("verify")
+    register._sign_in = lambda *a, **k: calls.append("signin")
+    fake_account = {"email": "e@t.co"}
+    stt.account_from_password_signin = lambda *a, **k: fake_account
+
+    class _FakeClient:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, *a, **k): pass
+    stt.authed_client = lambda *a, **k: _FakeClient()
+    stt.refresh_credits = lambda *a, **k: None
+    stt.cached_remaining = lambda *a, **k: 10000
+    time.sleep = lambda *a, **k: None
+    saved_reg_log = stt.REGISTER_LOG
+    stt.REGISTER_LOG = lambda _m: None
+    try:
+        # happy path: empty pool → proxy_url None; call order is the contract
+        pd = proxy.ProxyDriver({"proxies": []})
+        acct = register.UICoordinateStrategy(platform=FakePlatform()).register(
+            provider=FakeProvider(), proxy_driver=pd)
+        assert acct is fake_account
+        order = [c if isinstance(c, str) else c[0] for c in calls]
+        assert order == ["create_addr", "launch", "find", "focus", "fill",
+                         "poll", "verify", "signin", "kill"], order
+        assert ("launch", None) in calls, "empty pool → proxy_url None to Chrome"
+
+        # failure path: poll raises → kill still runs (finally), proxy marked failed
+        calls.clear()
+        marks: list = []
+
+        class FailProvider(FakeProvider):
+            def poll_verification_link(self, *a, **k):
+                calls.append("poll"); raise SystemExit("boom")
+
+        pd2 = proxy.ProxyDriver({"proxies": ["http://p"], "fail_threshold": 3,
+                                 "cooldown_secs": 900, "strict": False})
+        orig_fail = pd2.mark_fail
+        pd2.mark_fail = lambda p: (marks.append(p.url), orig_fail(p))
+        try:
+            register.UICoordinateStrategy(platform=FakePlatform()).register(
+                provider=FailProvider(), proxy_driver=pd2)
+            assert False, "should propagate"
+        except SystemExit:
+            pass
+        assert "kill" in [c if isinstance(c, str) else c[0] for c in calls], "kill must run in finally"
+        assert marks == ["http://p"], "failure must mark_fail the picked proxy"
+    finally:
+        for n, fn in saved.items():
+            setattr(register, n, fn)
+        for n, fn in saved_stt.items():
+            setattr(stt, n, fn)
+        time.sleep = saved_sleep
+        stt.REGISTER_LOG = saved_reg_log
 
 
 if __name__ == "__main__":

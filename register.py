@@ -18,6 +18,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any, Protocol
@@ -132,13 +133,92 @@ class RegisterStrategy(Protocol):
                  captcha: "CaptchaSolver | None" = None) -> dict[str, Any]: ...
 
 
+SIGNUP_URL = "https://elevenlabs.io/app/sign-up"
+
+
+class PlatformDriver(Protocol):
+    """OS-level management of the temporary real-Chrome window (used only by
+    UICoordinateStrategy). `mod_key` is the clipboard/select-all/address-bar
+    modifier — 'ctrl' on Windows, 'command' on macOS."""
+    mod_key: str
+
+    def launch_chrome(self, profile_dir: pathlib.Path, signup_url: str,
+                      proxy_url: str | None) -> "subprocess.Popen | None": ...
+    def find_profile_window(self, profile_dir: pathlib.Path, timeout_s: float) -> Any: ...
+    def ensure_foreground(self, window: Any) -> None: ...
+    def kill_profile(self, profile_dir: pathlib.Path,
+                     popen: "subprocess.Popen | None") -> None: ...
+
+
+def _default_platform_driver() -> PlatformDriver:
+    if sys.platform == "darwin":
+        from register_platform_mac import MacDriver
+        return MacDriver()
+    if os.name == "nt":
+        from register_platform_win import WinDriver
+        return WinDriver()
+    raise SystemExit(f"register 目前只支持 macOS 与 Windows；当前平台: {sys.platform}")
+
+
 class UICoordinateStrategy:
     """Real Chrome + coordinate automation. Gets hCaptcha's invisible pass from
     an authentic fingerprint + real OS input; ignores `captcha` (none needed)."""
 
+    def __init__(self, platform: PlatformDriver | None = None) -> None:
+        self._platform = platform  # None → resolved per sys.platform at register() time
+
     def register(self, *, provider: EmailProvider, proxy_driver: proxy.ProxyDriver,
                  captcha: "CaptchaSolver | None" = None) -> dict[str, Any]:
-        return _ui_register(provider=provider)
+        platform = self._platform or _default_platform_driver()
+        picked = proxy_driver.pick()
+        proxy_url = picked.url if picked else None
+        profile_dir = pathlib.Path(tempfile.mkdtemp(prefix="elevenlabs-stt-chrome-"))
+        _write_no_password_prefs(profile_dir)
+        popen = None
+        try:
+            stt._rlog("创建临时邮箱...")
+            addr = provider.create_address()
+            email = addr.address
+            stt._rlog(f"临时邮箱已创建: {email}")
+            password = stt.random_password()
+            stt._rlog("启动临时 Chrome...")
+            popen = platform.launch_chrome(profile_dir, SIGNUP_URL, proxy_url)
+            stt._rlog("等待临时 Chrome 窗口出现（最长 30s）...")
+            window = platform.find_profile_window(profile_dir, 30)
+            # Foreground the temp Chrome immediately, before any page-load waits,
+            # so the key/click sequence lands in sync.
+            stt._rlog("窗口已找到，置顶并等待页面渲染...")
+            platform.ensure_foreground(window)
+            time.sleep(4)
+            # Chrome already opened /app/sign-up from its command line; just wait
+            # for the app to render instead of re-navigating (visible reload).
+            time.sleep(12)
+            stt._rlog("填写注册表单...")
+            _fill_signup_form(window, platform, email, password)
+            tcfg = stt.temp_email_config()
+            stt._rlog(f"等待验证邮件（最长 {tcfg['poll_timeout_secs']}s）...")
+            link = provider.poll_verification_link(addr, VERIFY_LINK_PATTERN,
+                                                   tcfg["poll_timeout_secs"], tcfg["poll_interval_secs"])
+            stt._rlog("打开验证链接并确认...")
+            _open_verify_link_and_confirm(window, platform, link)
+            stt._rlog("用新账号登录...")
+            _sign_in(window, platform, email, password)
+            stt._rlog("拉取账号积分...")
+            account = stt.account_from_password_signin(email, password,
+                                                       temp_address=email, proxy=proxy_url)
+            with stt.authed_client(account, save=lambda _s: None, proxy=proxy_url) as client:
+                client.get("/v1/user")
+                stt.refresh_credits(account, client)
+            stt._rlog(f"注册完成: {email}，剩余积分 {stt.cached_remaining(account)}")
+            if picked:
+                proxy_driver.mark_ok(picked)
+            return account
+        except BaseException:
+            if picked:
+                proxy_driver.mark_fail(picked)
+            raise
+        finally:
+            platform.kill_profile(profile_dir, popen)
 
 
 class HTTPProtocolStrategy:
@@ -185,241 +265,96 @@ def register_one(*, strategy: RegisterStrategy | None = None,
     return strategy.register(provider=provider, proxy_driver=proxy_driver, captcha=captcha)
 
 
-# --- register (UI coordinate orchestration) ----------------------------
+# --- register (UI coordinate helpers) ----------------------------------
+# These run on both Windows and macOS: OS window management lives in the
+# PlatformDriver; here we only send keys/clicks via pyautogui/pyperclip, using
+# platform.mod_key for the clipboard / select-all / address-bar shortcuts.
 
-def _ui_register(*, provider: EmailProvider | None = None) -> dict[str, Any]:
-    """Create one ElevenLabs account via temp-mail + real Chrome, then return account."""
-    try:
-        import pyautogui, pyperclip, pygetwindow as gw
-    except ImportError:
-        raise SystemExit("auto-register needs pyautogui pyperclip pygetwindow")
-
-    provider = provider or CloudflareTempEmail(stt.temp_email_config())
-    stt._rlog("创建临时邮箱...")
-    addr = provider.create_address()
-    email = addr.address
-    stt._rlog(f"临时邮箱已创建: {email}")
-    password = stt.random_password()
-    chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-    profile_dir = tempfile.mkdtemp(prefix="elevenlabs-stt-chrome-")
-    prefs_path = pathlib.Path(profile_dir) / "Default" / "Preferences"
+def _write_no_password_prefs(profile_dir: pathlib.Path) -> None:
+    # fresh profile per account avoids logged-in Chrome redirecting sign-up to
+    # onboarding; disabling the password manager avoids the save-password bubble.
+    prefs_path = profile_dir / "Default" / "Preferences"
     prefs_path.parent.mkdir(parents=True, exist_ok=True)
     prefs_path.write_text(json.dumps({
         "credentials_enable_service": False,
         "profile": {"password_manager_enabled": False},
     }), encoding="utf-8")
 
-    # ponytail: fresh profile per account avoids logged-in Chrome redirecting sign-up to onboarding.
-    # Coordinates are ugly, but selector automation triggers hCaptcha; real Chrome doesn't.
-    def profile_window_handles() -> set[int]:
-        if not shutil.which("powershell"):
-            return set()
-        profile_name = pathlib.Path(profile_dir).name.replace("'", "''")
-        ps = (
-            f"$profile = '{profile_name}'; "
-            "$pids = @(Get-CimInstance Win32_Process -Filter \"name='chrome.exe'\" | "
-            "Where-Object { $_.CommandLine -and $_.CommandLine.Contains($profile) } | "
-            "Select-Object -ExpandProperty ProcessId); "
-            "if ($pids.Count -gt 0) { "
-            "Get-Process -Id $pids -ErrorAction SilentlyContinue | "
-            "Where-Object { $_.MainWindowHandle -ne 0 } | "
-            "ForEach-Object { $_.MainWindowHandle } "
-            "}"
-        )
+
+class _Input:
+    """Keyboard/mouse against the temp window, re-focusing before every action.
+    pyautogui/pyperclip are imported lazily so `import register` needs no GUI deps."""
+
+    def __init__(self, window: Any, platform: PlatformDriver) -> None:
         try:
-            out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                                 capture_output=True, text=True, timeout=3)
-        except Exception:
-            return set()
-        handles: set[int] = set()
-        for line in out.stdout.splitlines():
-            try:
-                handles.add(int(line.strip()))
-            except ValueError:
-                pass
-        return handles
+            import pyautogui, pyperclip
+        except ImportError:
+            raise SystemExit("auto-register needs pyautogui pyperclip")
+        self._pg = pyautogui
+        self._pc = pyperclip
+        self._window = window
+        self._platform = platform
+        self._mod = platform.mod_key
 
-    chrome_startup_kwargs = {}
-    if os.name == "nt":
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = 1  # SW_SHOWNORMAL: do not inherit a hidden Web UI process state.
-        chrome_startup_kwargs = {
-            "startupinfo": startupinfo,
-            "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP,
-        }
-    proc = None
-    try:
-        stt._rlog("启动临时 Chrome...")
-        proc = subprocess.Popen([
-            chrome,
-            f"--user-data-dir={profile_dir}",
-            "--no-first-run",
-            "--new-window",
-            "--window-position=40,40",
-            "--disable-save-password-bubble",
-            "--do-not-de-elevate",
-            "https://elevenlabs.io/app/sign-up",
-        ], **chrome_startup_kwargs)
-        new_window = None
-        stt._rlog("等待临时 Chrome 窗口出现（最长 30s）...")
-        # 30s: a brand-new profile cold-starts slowly (profile init + AV scan); 10s
-        # missed the window on busy machines and the finally-block killed late Chrome.
-        deadline = time.time() + 30
-        next_profile_probe = 0.0
-        while time.time() < deadline and new_window is None:
-            time.sleep(0.5)
-            profile_handles = set()
-            if time.time() >= next_profile_probe:
-                profile_handles = profile_window_handles()
-                next_profile_probe = time.time() + 1.0
-            for w in gw.getAllWindows():
-                hwnd = getattr(w, "_hWnd", None)
-                if hwnd in profile_handles:
-                    new_window = w
-                    break
-        if new_window is None:
-            raise SystemExit("auto-register could not find the new temporary Chrome window; aborting")
+    def _fg(self) -> None:
+        self._platform.ensure_foreground(self._window)
 
-        def window_op(name: str) -> None:
-            try:
-                getattr(new_window, name)()
-            except Exception as e:
-                # pygetwindow/pywin32 can report Windows error code 0 ("success")
-                # after the window operation actually completed. Treat only that
-                # wrapper bug as non-fatal; real focus/window errors should abort.
-                if "Error code from Windows: 0" not in str(e):
-                    raise
+    def hotkey(self, *keys: str) -> None:
+        self._fg()
+        self._pg.hotkey(*keys)
 
-        def ensure_window_foreground() -> None:
-            hwnd = getattr(new_window, "_hWnd", None)
-            if not hwnd or os.name != "nt":
-                window_op("activate")
-                return
-            import ctypes
-            user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
-            # Fast path: already foreground. Forcing anyway is what caused the
-            # constant restore/maximize flicker between every automation action.
-            if user32.GetForegroundWindow() == hwnd:
-                return
-            SW_RESTORE = 9
-            HWND_TOPMOST = -1
-            HWND_NOTOPMOST = -2
-            SWP_NOSIZE = 0x0001
-            SWP_NOMOVE = 0x0002
-            SWP_SHOWWINDOW = 0x0040
-            flags = SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
-            for attempt in range(8):
-                if user32.IsIconic(hwnd):
-                    user32.ShowWindow(hwnd, SW_RESTORE)
-                # AttachThreadInput to the current foreground thread satisfies
-                # Windows' foreground-lock rules. A synthetic Alt tap also works
-                # but toggles Chrome's menu-accelerator mode, breaking in-window
-                # keyboard focus for the very keys we send next.
-                fg = user32.GetForegroundWindow()
-                fg_tid = user32.GetWindowThreadProcessId(fg, None) if fg else 0
-                cur_tid = kernel32.GetCurrentThreadId()
-                attached = fg_tid and fg_tid != cur_tid and user32.AttachThreadInput(cur_tid, fg_tid, True)
-                try:
-                    user32.BringWindowToTop(hwnd)
-                    user32.SetForegroundWindow(hwnd)
-                    if attempt >= 4:  # last resort: topmost toggle
-                        user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
-                        user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags)
-                finally:
-                    if attached:
-                        user32.AttachThreadInput(cur_tid, fg_tid, False)
-                time.sleep(0.2)
-                if user32.GetForegroundWindow() == hwnd:
-                    return
-            raise SystemExit("auto-register could not focus the temporary Chrome window; aborting before sending keys")
+    def press(self, key: str) -> None:
+        self._fg()
+        self._pg.press(key)
 
-        # Foreground the temp Chrome immediately, before any page-load waits.
-        # pygetwindow's activate() is silently denied when we are a background
-        # process, which left the window behind for ~16s until the first click
-        # forced it forward and the key/click sequence landed out of sync.
-        stt._rlog("窗口已找到，置顶并等待页面渲染...")
-        window_op("restore")
-        window_op("maximize")
-        ensure_window_foreground()
-        time.sleep(4)
+    def paste(self, text: str) -> None:
+        self._fg()
+        self._pc.copy(text)
+        self._pg.hotkey(self._mod, "v")
 
-        def hotkey(*keys: str) -> None:
-            ensure_window_foreground()
-            pyautogui.hotkey(*keys)
+    def select_all(self) -> None:
+        self.hotkey(self._mod, "a")
 
-        def press(key: str) -> None:
-            ensure_window_foreground()
-            pyautogui.press(key)
+    def focus_address_bar(self) -> None:
+        self.hotkey(self._mod, "l")
 
-        def click_frac(x_frac: float, y_frac: float) -> None:
-            ensure_window_foreground()
-            x = new_window.left + int(new_window.width * x_frac)
-            y = new_window.top + int(new_window.height * y_frac)
-            if x < 0 or y < 0:
-                # A minimized window reports -32000 geometry; pyautogui clamps the
-                # click to (0,0), which hits Chrome's tab-search chevron.
-                raise SystemExit("auto-register got bad temp Chrome window geometry; aborting")
-            pyautogui.click(x, y)
-            time.sleep(0.1)
+    def click_frac(self, x_frac: float, y_frac: float) -> None:
+        self._fg()
+        w = self._window
+        x = w.left + int(w.width * x_frac)
+        y = w.top + int(w.height * y_frac)
+        if x < 0 or y < 0:
+            # A minimized window reports -32000 geometry; pyautogui clamps the
+            # click to (0,0), which hits Chrome's tab-search chevron.
+            raise SystemExit("auto-register got bad temp Chrome window geometry; aborting")
+        self._pg.click(x, y)
+        time.sleep(0.1)
 
-        def paste(text: str) -> None:
-            ensure_window_foreground()
-            pyperclip.copy(text)
-            pyautogui.hotkey("ctrl", "v")
 
-        # Chrome already opened /app/sign-up from its command line; just wait
-        # for the app to render instead of re-navigating (visible reload).
-        time.sleep(12)
+def _fill_signup_form(window: Any, platform: PlatformDriver, email: str, password: str) -> None:
+    io = _Input(window, platform)
+    io.click_frac(0.50, 0.56)  # signup email
+    io.select_all(); io.paste(email)
+    io.press("tab"); io.paste(password)
+    io.press("enter")
 
-        stt._rlog("填写注册表单...")
-        click_frac(0.50, 0.56)  # signup email
-        hotkey("ctrl", "a"); paste(email)
-        press("tab"); paste(password)
-        press("enter")
 
-        _tcfg = stt.temp_email_config()
-        stt._rlog(f"等待验证邮件（最长 {_tcfg['poll_timeout_secs']}s）...")
-        link = provider.poll_verification_link(addr, VERIFY_LINK_PATTERN,
-                                               _tcfg["poll_timeout_secs"], _tcfg["poll_interval_secs"])
-        stt._rlog("打开验证链接并确认...")
-        hotkey("ctrl", "l")
-        paste(link)
-        press("enter")
-        time.sleep(15)
-        press("enter")  # modal Continue if focused
-        click_frac(0.50, 0.62)
-        click_frac(0.65, 0.62)  # verification modal Continue fallback
-        time.sleep(8)
-        stt._rlog("用新账号登录...")
-        click_frac(0.50, 0.62)  # sign-in email
-        hotkey("ctrl", "a"); paste(email)
-        press("tab"); paste(password)
-        press("enter")
-        time.sleep(15)
+def _open_verify_link_and_confirm(window: Any, platform: PlatformDriver, link: str) -> None:
+    io = _Input(window, platform)
+    io.focus_address_bar()
+    io.paste(link)
+    io.press("enter")
+    time.sleep(15)
+    io.press("enter")  # modal Continue if focused
+    io.click_frac(0.50, 0.62)
+    io.click_frac(0.65, 0.62)  # verification modal Continue fallback
+    time.sleep(8)
 
-        stt._rlog("拉取账号积分...")
-        account = stt.account_from_password_signin(email, password, temp_address=email)
-        with stt.authed_client(account, save=lambda _s: None) as client:
-            client.get("/v1/user")
-            stt.refresh_credits(account, client)
-        stt._rlog(f"注册完成: {email}，剩余积分 {stt.cached_remaining(account)}")
-        return account
-    finally:
-        if shutil.which("powershell"):
-            profile_name = pathlib.Path(profile_dir).name.replace("'", "''")
-            subprocess.run([
-                "powershell", "-NoProfile", "-Command",
-                f"$profile = '{profile_name}'; "
-                "Get-CimInstance Win32_Process -Filter \"name='chrome.exe'\" | "
-                "Where-Object { $_.CommandLine -and $_.CommandLine.Contains($profile) } | "
-                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        elif proc is not None:
-            proc.terminate()
-        for _ in range(5):
-            shutil.rmtree(profile_dir, ignore_errors=True)
-            if not pathlib.Path(profile_dir).exists():
-                break
-            time.sleep(0.5)
+
+def _sign_in(window: Any, platform: PlatformDriver, email: str, password: str) -> None:
+    io = _Input(window, platform)
+    io.click_frac(0.50, 0.62)  # sign-in email
+    io.select_all(); io.paste(email)
+    io.press("tab"); io.paste(password)
+    io.press("enter")
+    time.sleep(15)
