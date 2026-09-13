@@ -349,6 +349,7 @@ def run() -> int:
     _check_email_provider()
     _check_register_dispatch()
     _check_register_orchestration()
+    _check_mac_chrome_discovery()
 
     print("selfcheck ok")
     return 0
@@ -589,6 +590,27 @@ def _check_register_orchestration() -> None:
             setattr(stt, n, fn)
         time.sleep = saved_sleep
         stt.REGISTER_LOG = saved_reg_log
+
+
+def _check_mac_chrome_discovery() -> None:
+    import register_platform_mac as mac
+    CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    BRAVE = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+    # env override wins
+    assert mac._find_chrome_binary({"ELEVENLABS_STT_CHROME": "/custom/x"},
+                                   exists=lambda p: True) == "/custom/x"
+    # Chrome preferred over Brave when both present
+    assert mac._find_chrome_binary({}, exists=lambda p: p in (CHROME, BRAVE)) == CHROME
+    # Brave when only Brave present
+    assert mac._find_chrome_binary({}, exists=lambda p: p == BRAVE) == BRAVE
+    # neither → SystemExit pointing at the override env var
+    try:
+        mac._find_chrome_binary({}, exists=lambda p: False)
+        assert False, "no browser must raise"
+    except SystemExit as e:
+        assert "ELEVENLABS_STT_CHROME" in str(e)
+    # MacDriver uses the command modifier for clipboard shortcuts
+    assert mac.MacDriver.mod_key == "command"
 
 
 if __name__ == "__main__":
