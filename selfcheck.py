@@ -15,6 +15,7 @@ import tempfile
 import time
 
 import audio_split
+import proxy
 import stt
 from stt import (
     DEFAULTS, _rlog, _session_to_account, _stagger_wait, _tlog, accounts_config,
@@ -344,8 +345,52 @@ def run() -> int:
     except SystemExit:
         pass
 
+    _check_proxy_driver()
+
     print("selfcheck ok")
     return 0
+
+
+def _check_proxy_driver() -> None:
+    now = time.time()
+    # empty pool → always direct
+    d = proxy.ProxyDriver({"proxies": [], "fail_threshold": 3, "cooldown_secs": 900, "strict": False})
+    assert d.pick() is None, "empty pool must yield direct connection"
+
+    # round-robin over two live proxies
+    cfg = {"proxies": ["http://a", "http://b"], "fail_threshold": 2, "cooldown_secs": 900, "strict": False}
+    d = proxy.ProxyDriver(cfg)
+    p1, p2, p3 = d.pick(), d.pick(), d.pick()
+    assert {p1.url, p2.url} == {"http://a", "http://b"}, "round-robin should cover both"
+    assert p3.url == p1.url, "cursor wraps around"
+
+    # fail to threshold → disabled; only the other remains
+    d = proxy.ProxyDriver(cfg)
+    bad = next(p for p in (d.pick(), d.pick()) if p.url == "http://a")
+    d.mark_fail(bad); d.mark_fail(bad)  # 2 hits threshold
+    assert {d.pick().url for _ in range(4)} == {"http://b"}, "disabled proxy must drop out"
+
+    # mark_ok resets fail count (1 fail after ok < threshold → still live)
+    d = proxy.ProxyDriver(cfg)
+    a = next(p for p in (d.pick(), d.pick()) if p.url == "http://a")
+    d.mark_fail(a); d.mark_ok(a); d.mark_fail(a)
+    assert "http://a" in {d.pick().url for _ in range(4)}, "mark_ok must reset fail count"
+
+    # sole disabled proxy → direct (strict=False); cooldown expiry revives
+    d = proxy.ProxyDriver({"proxies": ["http://a"], "fail_threshold": 1, "cooldown_secs": 900, "strict": False})
+    a = d.pick(); d.mark_fail(a)
+    assert d.pick() is None, "sole disabled proxy + strict=False → direct"
+    a.disabled_until = now - 1  # manual expiry
+    assert d.pick().url == "http://a", "cooldown expiry must revive proxy"
+
+    # strict=True, all disabled → raise
+    d = proxy.ProxyDriver({"proxies": ["http://a"], "fail_threshold": 1, "cooldown_secs": 900, "strict": True})
+    a = d.pick(); d.mark_fail(a)
+    try:
+        d.pick()
+        assert False, "strict pool exhausted must raise"
+    except SystemExit as e:
+        assert "strict" in str(e)
 
 
 if __name__ == "__main__":

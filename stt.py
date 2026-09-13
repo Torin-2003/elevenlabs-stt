@@ -146,6 +146,12 @@ def accounts_config(path: pathlib.Path = CONFIG_PATH) -> dict[str, Any]:
     return cfg
 
 
+def proxy_config(path: pathlib.Path = CONFIG_PATH) -> dict[str, Any]:
+    cfg = {"proxies": [], "fail_threshold": 3, "cooldown_secs": 900, "strict": False}
+    cfg.update(load_toml(path).get("proxy", {}))
+    return cfg
+
+
 def resolve_language(value: str) -> str | None:
     """Return ISO 639-3 code (None for auto) or raise ValueError."""
     v = value.strip().lower()

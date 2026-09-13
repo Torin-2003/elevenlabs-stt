@@ -31,3 +31,13 @@ pool_target = 3                          # keep this many fresh (full-quota) acc
 fresh_threshold = 10000                  # remaining >= this counts as "fresh"
 selection_margin = 1.2                   # require remaining >= cost * margin
 auto_refill = true                       # refill pool to target after each transcription
+
+[proxy]
+# Upstream proxies for the registration flow (Chrome + Firebase/ElevenLabs httpx
+# share one). MUST be residential / rotating IPs — ElevenLabs allows one free
+# account per IP and hCaptcha flags datacenter ASNs. Empty = direct (default).
+# proxies = ["http://user:pass@1.2.3.4:8080", "socks5://5.6.7.8:1080"]
+proxies = []
+fail_threshold = 3                       # disable a proxy after this many consecutive failures
+cooldown_secs = 900                      # re-admit a disabled proxy after this long (15 min)
+strict = false                           # true: error when all disabled; false: fall back to direct
