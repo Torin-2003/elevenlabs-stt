@@ -346,6 +346,7 @@ def run() -> int:
         pass
 
     _check_proxy_driver()
+    _check_email_provider()
 
     print("selfcheck ok")
     return 0
@@ -391,6 +392,65 @@ def _check_proxy_driver() -> None:
         assert False, "strict pool exhausted must raise"
     except SystemExit as e:
         assert "strict" in str(e)
+
+
+def _check_email_provider() -> None:
+    import httpx
+    import register
+
+    # VERIFY_LINK_PATTERN contract: only elevenlabs.io action links
+    good = 'see https://elevenlabs.io/app/action?mode=verifyEmail&oobCode=XYZ&x=1 end'
+    bad = 'https://evil.com/app/action?oobCode=XYZ'
+    assert register.VERIFY_LINK_PATTERN.search(good).group(0).endswith("x=1")
+    assert register.VERIFY_LINK_PATTERN.search(bad) is None
+
+    # constructs from cfg without touching the network
+    cfg = temp_email_config(pathlib.Path("config.example.toml"))
+    prov = register.CloudflareTempEmail(cfg)
+    assert hasattr(prov, "create_address") and hasattr(prov, "poll_verification_link")
+
+    # domain rotation: capture the "domain" posted across create_address() calls
+    posted: list[str] = []
+
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {"address": f"u@{posted[-1]}", "jwt": "tok"}
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, url, json=None, headers=None):
+            posted.append(json["domain"])
+            return _Resp()
+
+    base = {"base_url": "https://m.x", "admin_password": "", "site_password": "",
+            "use_admin_path": True}
+    orig = httpx.Client
+    httpx.Client = _Client
+    try:
+        multi = register.CloudflareTempEmail(
+            {**base, "domain": "a.com", "domains": ["a.com", "b.com", "c.com"]})
+        for _ in range(4):
+            multi.create_address()
+        assert posted == ["a.com", "b.com", "c.com", "a.com"], f"rotate domains, got {posted}"
+        posted.clear()
+        single = register.CloudflareTempEmail(
+            {**base, "domain": "only.com", "domains": ["only.com"]})
+        for _ in range(3):
+            single.create_address()
+        assert posted == ["only.com"] * 3, f"single domain stays constant, got {posted}"
+    finally:
+        httpx.Client = orig
+
+    # a fake provider duck-types for the strategy
+    class FakeProvider:
+        def create_address(self):
+            return register.EmailAddress(address="x@t.co", token="jwt", raw={})
+        def poll_verification_link(self, addr, pattern, timeout_s, interval_s):
+            return "https://elevenlabs.io/app/action?oobCode=Z"
+    assert FakeProvider().create_address().address == "x@t.co"
 
 
 if __name__ == "__main__":

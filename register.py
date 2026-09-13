@@ -9,6 +9,7 @@ cycle; this module only touches stt.* at call time.
 """
 from __future__ import annotations
 
+import dataclasses
 import html
 import json
 import os
@@ -19,7 +20,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 
@@ -28,55 +29,91 @@ import stt
 
 # --- temp-email --------------------------------------------------------
 
-def temp_email_create(name: str | None = None,
-                      cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Create a cloudflare_temp_email address; admin path first, user path fallback."""
-    cfg = cfg or stt.temp_email_config()
-    if not cfg["base_url"] or not cfg["domain"]:
-        raise SystemExit("temp_email.base_url and temp_email.domain are required")
-    base = str(cfg["base_url"]).rstrip("/")
-    # cloudflare_temp_email v1.9 requires name even on the admin API.
-    local = name or ("el" + secrets.token_hex(5))
-    body = {"name": local, "domain": cfg["domain"], "cf_token": "",
-            "enableRandomSubdomain": False}
-
-    with httpx.Client(timeout=30) as client:
-        if cfg.get("use_admin_path", True) and cfg.get("admin_password"):
-            r = client.post(f"{base}/admin/new_address", json=body,
-                            headers={"x-admin-auth": cfg["admin_password"]})
-            if r.status_code < 400:
-                return r.json()
-            if r.status_code not in (401, 403):
-                raise SystemExit(f"temp-email create failed ({r.status_code}): {r.text[:300]}")
-
-        headers = {}
-        if cfg.get("site_password"):
-            headers["x-custom-auth"] = cfg["site_password"]
-        r = client.post(f"{base}/api/new_address", json=body, headers=headers)
-        if r.status_code >= 400:
-            raise SystemExit(f"temp-email create failed ({r.status_code}): {r.text[:300]}")
-        return r.json()
+VERIFY_LINK_PATTERN = re.compile(
+    r"https://elevenlabs\.io/app/action\?[^\s\"<>]+oobCode=[^\s\"<>]+")
 
 
-def latest_verify_link(addr_jwt: str, cfg: dict[str, Any] | None = None) -> str:
-    """Return newest ElevenLabs verification link from a temp mailbox."""
-    cfg = cfg or stt.temp_email_config()
-    base = str(cfg["base_url"]).rstrip("/")
-    deadline = time.time() + float(cfg["poll_timeout_secs"])
-    headers = {"Authorization": f"Bearer {addr_jwt}"}
-    with httpx.Client(timeout=30) as client:
-        while time.time() < deadline:
-            r = client.get(f"{base}/api/parsed_mails", params={"limit": 20, "offset": 0},
-                           headers=headers)
+@dataclasses.dataclass
+class EmailAddress:
+    address: str
+    token: str              # bearer token for polling this mailbox (cloudflare_temp_email jwt)
+    raw: dict[str, Any]
+
+
+class EmailProvider(Protocol):
+    def create_address(self) -> EmailAddress: ...
+    def poll_verification_link(self, addr: EmailAddress, pattern: "re.Pattern[str]",
+                               timeout_s: float, interval_s: float) -> str: ...
+
+
+class CloudflareTempEmail:
+    """cloudflare_temp_email backend; admin path first, user path fallback.
+
+    create_address() rotates over the configured domains[] (round-robin) so a
+    batch of registrations spreads across domains — ElevenLabs rejects some
+    disposable domains, and spreading avoids putting every account on a bad one.
+    """
+
+    def __init__(self, cfg: dict[str, Any]) -> None:
+        self._cfg = cfg
+        self._domains = list(cfg.get("domains") or ([cfg["domain"]] if cfg.get("domain") else []))
+        self._cursor = 0
+
+    def _next_domain(self) -> str:
+        if not self._domains:
+            raise SystemExit("temp_email.domain / temp_email.domains are required")
+        domain = self._domains[self._cursor % len(self._domains)]
+        self._cursor += 1
+        return domain
+
+    def create_address(self, name: str | None = None) -> EmailAddress:
+        cfg = self._cfg
+        if not cfg["base_url"]:
+            raise SystemExit("temp_email.base_url is required")
+        base = str(cfg["base_url"]).rstrip("/")
+        # cloudflare_temp_email v1.9 requires name even on the admin API.
+        local = name or ("el" + secrets.token_hex(5))
+        body = {"name": local, "domain": self._next_domain(), "cf_token": "",
+                "enableRandomSubdomain": False}
+        with httpx.Client(timeout=30) as client:
+            if cfg.get("use_admin_path", True) and cfg.get("admin_password"):
+                r = client.post(f"{base}/admin/new_address", json=body,
+                                headers={"x-admin-auth": cfg["admin_password"]})
+                if r.status_code < 400:
+                    return self._to_address(r.json())
+                if r.status_code not in (401, 403):
+                    raise SystemExit(f"temp-email create failed ({r.status_code}): {r.text[:300]}")
+            headers = {}
+            if cfg.get("site_password"):
+                headers["x-custom-auth"] = cfg["site_password"]
+            r = client.post(f"{base}/api/new_address", json=body, headers=headers)
             if r.status_code >= 400:
-                raise SystemExit(f"temp-email poll failed ({r.status_code}): {r.text[:300]}")
-            for mail in r.json().get("results", []):
-                text = html.unescape("\n".join(str(mail.get(k) or "") for k in ("text", "html")))
-                match = re.search(r"https://elevenlabs\.io/app/action\?[^\s\"<>]+oobCode=[^\s\"<>]+", text)
-                if match:
-                    return match.group(0)
-            time.sleep(float(cfg["poll_interval_secs"]))
-    raise SystemExit("timed out waiting for ElevenLabs verification email")
+                raise SystemExit(f"temp-email create failed ({r.status_code}): {r.text[:300]}")
+            return self._to_address(r.json())
+
+    @staticmethod
+    def _to_address(data: dict[str, Any]) -> EmailAddress:
+        return EmailAddress(address=data["address"], token=data["jwt"], raw=data)
+
+    def poll_verification_link(self, addr: EmailAddress, pattern: "re.Pattern[str]",
+                               timeout_s: float, interval_s: float) -> str:
+        """Return newest ElevenLabs verification link from the temp mailbox."""
+        base = str(self._cfg["base_url"]).rstrip("/")
+        deadline = time.time() + float(timeout_s)
+        headers = {"Authorization": f"Bearer {addr.token}"}
+        with httpx.Client(timeout=30) as client:
+            while time.time() < deadline:
+                r = client.get(f"{base}/api/parsed_mails", params={"limit": 20, "offset": 0},
+                               headers=headers)
+                if r.status_code >= 400:
+                    raise SystemExit(f"temp-email poll failed ({r.status_code}): {r.text[:300]}")
+                for mail in r.json().get("results", []):
+                    text = html.unescape("\n".join(str(mail.get(k) or "") for k in ("text", "html")))
+                    match = pattern.search(text)
+                    if match:
+                        return match.group(0)
+                time.sleep(float(interval_s))
+        raise SystemExit("timed out waiting for ElevenLabs verification email")
 
 
 # --- register ----------------------------------------------------------
@@ -88,9 +125,10 @@ def register_one() -> dict[str, Any]:
     except ImportError:
         raise SystemExit("auto-register needs pyautogui pyperclip pygetwindow")
 
+    provider = CloudflareTempEmail(stt.temp_email_config())
     stt._rlog("创建临时邮箱...")
-    addr = temp_email_create()
-    email = addr["address"]
+    addr = provider.create_address()
+    email = addr.address
     stt._rlog(f"临时邮箱已创建: {email}")
     password = stt.random_password()
     chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
@@ -272,8 +310,10 @@ def register_one() -> dict[str, Any]:
         press("tab"); paste(password)
         press("enter")
 
-        stt._rlog(f"等待验证邮件（最长 {stt.temp_email_config()['poll_timeout_secs']}s）...")
-        link = latest_verify_link(addr["jwt"])
+        _tcfg = stt.temp_email_config()
+        stt._rlog(f"等待验证邮件（最长 {_tcfg['poll_timeout_secs']}s）...")
+        link = provider.poll_verification_link(addr, VERIFY_LINK_PATTERN,
+                                               _tcfg["poll_timeout_secs"], _tcfg["poll_interval_secs"])
         stt._rlog("打开验证链接并确认...")
         hotkey("ctrl", "l")
         paste(link)
