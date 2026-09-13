@@ -350,6 +350,7 @@ def run() -> int:
     _check_register_dispatch()
     _check_register_orchestration()
     _check_mac_chrome_discovery()
+    _check_proxy_threading()
 
     print("selfcheck ok")
     return 0
@@ -611,6 +612,33 @@ def _check_mac_chrome_discovery() -> None:
         assert "ELEVENLABS_STT_CHROME" in str(e)
     # MacDriver uses the command modifier for clipboard shortcuts
     assert mac.MacDriver.mod_key == "command"
+
+
+def _check_proxy_threading() -> None:
+    import httpx
+    captured: dict = {}
+    orig = httpx.Client
+
+    def spy(*a, **k):
+        captured.clear(); captured.update(k)
+        k.pop("proxy", None)  # don't hand a bogus proxy to the real client
+        return orig(*a, **k)
+
+    sess = {"jwt": "x", "jwt_exp": time.time() + 3600}  # unexpired → get_jwt stays offline
+    httpx.Client = spy
+    try:
+        stt.authed_client(sess, save=lambda _s: None, proxy="http://p").close()
+    finally:
+        httpx.Client = orig
+    assert captured.get("proxy") == "http://p", f"authed_client must thread proxy, got {captured}"
+
+    captured.clear()
+    httpx.Client = spy
+    try:
+        stt.authed_client(sess, save=lambda _s: None).close()
+    finally:
+        httpx.Client = orig
+    assert captured.get("proxy") is None, "no proxy kwarg means direct (no proxy passed to httpx)"
 
 
 if __name__ == "__main__":

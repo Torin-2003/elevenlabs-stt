@@ -429,13 +429,16 @@ def get_jwt(session: dict[str, Any], save=None) -> str:
     return session["jwt"]
 
 
-def authed_client(session: dict[str, Any], save=None) -> httpx.Client:
+def authed_client(session: dict[str, Any], save=None, proxy: str | None = None) -> httpx.Client:
     jwt = get_jwt(session, save)
-    return httpx.Client(
+    kwargs: dict[str, Any] = dict(
         base_url=API_BASE,
         headers={"Authorization": f"Bearer {jwt}"},
         timeout=httpx.Timeout(30.0, read=None),  # upload may be slow: no read cap
     )
+    if proxy:  # httpx 0.28: singular `proxy=`; only used during registration
+        kwargs["proxy"] = proxy
+    return httpx.Client(**kwargs)
 
 
 def random_password() -> str:
@@ -444,20 +447,23 @@ def random_password() -> str:
     return "El1!" + "".join(secrets.choice(alphabet) for _ in range(12))
 
 
-def firebase_signin_password(email: str, password: str) -> dict[str, Any]:
-    r = httpx.post(
-        f"{IDENTITY_URL}:signInWithPassword?key={FIREBASE_API_KEY}",
-        json={"email": email, "password": password, "returnSecureToken": True},
-        headers={"Referer": FIREBASE_REFERER},
-        timeout=30,
-    )
+def firebase_signin_password(email: str, password: str, proxy: str | None = None) -> dict[str, Any]:
+    url = f"{IDENTITY_URL}:signInWithPassword?key={FIREBASE_API_KEY}"
+    json_body = {"email": email, "password": password, "returnSecureToken": True}
+    headers = {"Referer": FIREBASE_REFERER}
+    if proxy:
+        with httpx.Client(proxy=proxy, timeout=30) as client:
+            r = client.post(url, json=json_body, headers=headers)
+    else:
+        r = httpx.post(url, json=json_body, headers=headers, timeout=30)
     if r.status_code >= 400:
         raise SystemExit(f"firebase password sign-in failed ({r.status_code}): {r.text[:300]}")
     return r.json()
 
 
-def account_from_password_signin(email: str, password: str, temp_address: str | None = None) -> dict[str, Any]:
-    data = firebase_signin_password(email, password)
+def account_from_password_signin(email: str, password: str, temp_address: str | None = None,
+                                 proxy: str | None = None) -> dict[str, Any]:
+    data = firebase_signin_password(email, password, proxy=proxy)
     sess = {
         "apiKey": FIREBASE_API_KEY,
         "refreshToken": data.get("refreshToken"),
