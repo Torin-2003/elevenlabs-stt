@@ -147,6 +147,29 @@ stt selfcheck          离线自检（不联网）
 
 配置 `[temp_email]` 和 `[accounts]` 后，脚本可以维护多个免费账号：转录时自动选择够用且剩余额度最小的账号，成功后按 `pool_target` 自动补池。详见 [`docs/account-pool.md`](./docs/account-pool.md)；`[temp_email]` 依赖的临时邮箱后端部署见 [`docs/temp-email-backend.md`](./docs/temp-email-backend.md)。不配置 `[temp_email]` 时仍是普通单账号模式。
 
+### 注册策略（`[register] strategy`）
+
+注册机是可插拔的多策略架构：
+
+- `ui`（默认）——真实 Chrome/Brave + 坐标自动化。凭真实指纹 + 真实输入拿到 hCaptcha 的隐形放行，无需打码。Windows 与 macOS 均支持。
+- `http` / `cdp`——协议重放 / 隐身 CDP 浏览器，**尚未实现**（选中会报错并提示指引）。留作扩展点，见 `docs/superpowers/specs/2026-09-14-register-mac-and-proxy-design.md`。
+
+### macOS 首次运行
+
+`ui` 策略在 macOS 上用真实 Chrome/Brave + 键鼠自动化，首次运行需：
+
+1. **授予 Accessibility 权限**：System Settings → Privacy & Security → Accessibility，把你的终端 app（Terminal / iTerm）打开开关。否则自动化的键盘鼠标事件会被系统静默丢弃，注册会卡在填表这一步。
+2. **浏览器**：默认探测 `/Applications/Google Chrome.app`，其次 `/Applications/Brave Browser.app`。都不在标准路径时，设 `export ELEVENLABS_STT_CHROME="/path/to/浏览器可执行文件"`。
+3. 运行期间会弹出一个临时 Chrome/Brave 窗口，请勿手动切走或最小化，直到日志显示「注册完成」。
+
+### 代理（`[proxy]`，可选）
+
+给注册流程加代理池（Chrome 与 Firebase/ElevenLabs 的 API 调用共用一个代理）：
+
+- **必须用住宅 / 轮换 IP**——ElevenLabs 政策为每 IP 一个免费账号，数据中心 IP 会被 ElevenLabs 与 hCaptcha 直接标记。
+- 留空即直连（默认，日常转录流量始终直连、不走代理）。
+- 连续失败 `fail_threshold` 次的代理会被禁用 `cooldown_secs` 秒后重试；`strict = true` 时全池不可用直接报错，`false` 时降级直连。
+
 ## 批量转录与自动分配
 
 `stt transcribe a.mp3 b.mp3 c.mp3` 可一次转录多个文件。上传前脚本会：

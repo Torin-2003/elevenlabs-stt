@@ -93,6 +93,7 @@ poll_timeout_secs = 120
 
 ## 注意事项
 
+- **平台无关**：邮箱后端只走 HTTP API，Windows 与 macOS 完全一致，无差异；Mac 特有的首次运行步骤（Accessibility 权限、浏览器路径）见 README「macOS 首次运行」，与本后端无关。
 - 本项目只用上游「创建地址 + 读已解析邮件」两个能力，**不依赖**其前端、Telegram、SMTP proxy、S3 附件等功能。
 - 请自部署后端，尊重上游项目与 ElevenLabs 的服务条款，只用你有权使用的域名与账号。
 - 后端版本建议 v1.9 及以上（admin API 也要求 `name` 字段）。
