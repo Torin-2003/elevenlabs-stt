@@ -32,6 +32,9 @@ fresh_threshold = 10000                  # remaining >= this counts as "fresh"
 selection_margin = 1.2                   # require remaining >= cost * margin
 auto_refill = true                       # refill pool to target after each transcription
 
+[register]
+strategy = "ui"                          # ui (real Chrome, default) | http | cdp (both not yet implemented)
+
 [proxy]
 # Upstream proxies for the registration flow (Chrome + Firebase/ElevenLabs httpx
 # share one). MUST be residential / rotating IPs — ElevenLabs allows one free
@@ -41,3 +44,9 @@ proxies = []
 fail_threshold = 3                       # disable a proxy after this many consecutive failures
 cooldown_secs = 900                      # re-admit a disabled proxy after this long (15 min)
 strict = false                           # true: error when all disabled; false: fall back to direct
+
+[captcha]
+# Only used by the http/cdp strategies (not implemented yet); the ui strategy
+# gets hCaptcha's invisible pass and needs no solver.
+provider = ""                            # ezcaptcha | 2captcha | yescaptcha
+api_key = ""

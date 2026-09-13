@@ -146,6 +146,12 @@ def accounts_config(path: pathlib.Path = CONFIG_PATH) -> dict[str, Any]:
     return cfg
 
 
+def register_config(path: pathlib.Path = CONFIG_PATH) -> dict[str, Any]:
+    cfg = {"strategy": "ui"}  # ui (real Chrome) | http | cdp (both extension-point stubs)
+    cfg.update(load_toml(path).get("register", {}))
+    return cfg
+
+
 def proxy_config(path: pathlib.Path = CONFIG_PATH) -> dict[str, Any]:
     cfg = {"proxies": [], "fail_threshold": 3, "cooldown_secs": 900, "strict": False}
     cfg.update(load_toml(path).get("proxy", {}))

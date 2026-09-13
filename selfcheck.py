@@ -347,6 +347,7 @@ def run() -> int:
 
     _check_proxy_driver()
     _check_email_provider()
+    _check_register_dispatch()
 
     print("selfcheck ok")
     return 0
@@ -451,6 +452,52 @@ def _check_email_provider() -> None:
         def poll_verification_link(self, addr, pattern, timeout_s, interval_s):
             return "https://elevenlabs.io/app/action?oobCode=Z"
     assert FakeProvider().create_address().address == "x@t.co"
+
+
+def _check_register_dispatch() -> None:
+    import register
+
+    seen = {}
+
+    class FakeStrategy:
+        def register(self, *, provider, proxy_driver, captcha=None):
+            seen["provider"] = provider
+            seen["proxy_driver"] = proxy_driver
+            return {"email": "fake@x", "ok": True}
+
+    class FakeProvider:
+        def create_address(self): raise AssertionError("not called")
+        def poll_verification_link(self, *a, **k): raise AssertionError("not called")
+
+    empty_pool = proxy.ProxyDriver({"proxies": []})
+    fp = FakeProvider()
+    out = register.register_one(strategy=FakeStrategy(), provider=fp, proxy_driver=empty_pool)
+    assert out == {"email": "fake@x", "ok": True}
+    assert seen["provider"] is fp and seen["proxy_driver"] is empty_pool, "dispatcher must inject shared services"
+
+    # config-driven dispatch: http/cdp → NotImplementedError stub; unknown → SystemExit
+    orig = stt.register_config
+    try:
+        stt.register_config = lambda *a, **k: {"strategy": "http"}
+        try:
+            register.register_one()
+            assert False, "http stub must raise NotImplementedError"
+        except NotImplementedError as e:
+            assert "ui" in str(e), "stub should point to strategy='ui'"
+        stt.register_config = lambda *a, **k: {"strategy": "cdp"}
+        try:
+            register.register_one()
+            assert False, "cdp stub must raise NotImplementedError"
+        except NotImplementedError:
+            pass
+        stt.register_config = lambda *a, **k: {"strategy": "zzz"}
+        try:
+            register.register_one()
+            assert False, "unknown strategy must raise SystemExit"
+        except SystemExit as e:
+            assert "zzz" in str(e)
+    finally:
+        stt.register_config = orig
 
 
 if __name__ == "__main__":

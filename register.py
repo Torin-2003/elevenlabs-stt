@@ -24,6 +24,7 @@ from typing import Any, Protocol
 
 import httpx
 
+import proxy
 import stt
 
 
@@ -116,16 +117,84 @@ class CloudflareTempEmail:
         raise SystemExit("timed out waiting for ElevenLabs verification email")
 
 
-# --- register ----------------------------------------------------------
+# --- strategy ----------------------------------------------------------
+# Pluggable registration strategies. UICoordinateStrategy (real Chrome) is the
+# only one implemented; HTTP/CDP are extension-point stubs — adding one is a new
+# class here plus a CaptchaSolver, without touching the dispatcher or the shared
+# services (EmailProvider / ProxyDriver / CaptchaSolver).
 
-def register_one() -> dict[str, Any]:
+class CaptchaSolver(Protocol):
+    def solve_hcaptcha(self, sitekey: str, page_url: str) -> str: ...
+
+
+class RegisterStrategy(Protocol):
+    def register(self, *, provider: EmailProvider, proxy_driver: proxy.ProxyDriver,
+                 captcha: "CaptchaSolver | None" = None) -> dict[str, Any]: ...
+
+
+class UICoordinateStrategy:
+    """Real Chrome + coordinate automation. Gets hCaptcha's invisible pass from
+    an authentic fingerprint + real OS input; ignores `captcha` (none needed)."""
+
+    def register(self, *, provider: EmailProvider, proxy_driver: proxy.ProxyDriver,
+                 captcha: "CaptchaSolver | None" = None) -> dict[str, Any]:
+        return _ui_register(provider=provider)
+
+
+class HTTPProtocolStrategy:
+    def register(self, **_: Any) -> dict[str, Any]:
+        raise NotImplementedError(
+            "HTTP 协议策略尚未实现。需要 curl_cffi + Firebase 流程 + 付费 CaptchaSolver；"
+            "见 docs/superpowers/specs/2026-09-14-register-mac-and-proxy-design.md。"
+            "当前请用 [register] strategy='ui'。")
+
+
+class StealthCDPStrategy:
+    def register(self, **_: Any) -> dict[str, Any]:
+        raise NotImplementedError(
+            "隐身 CDP 策略尚未实现。需引入 nodriver/Patchright/Camoufox。"
+            "当前请用 [register] strategy='ui'。")
+
+
+_STRATEGIES = {
+    "ui": UICoordinateStrategy,
+    "http": HTTPProtocolStrategy,
+    "cdp": StealthCDPStrategy,
+}
+
+
+def register_one(*, strategy: RegisterStrategy | None = None,
+                 provider: EmailProvider | None = None,
+                 proxy_driver: proxy.ProxyDriver | None = None,
+                 captcha: "CaptchaSolver | None" = None) -> dict[str, Any]:
+    """Register one ElevenLabs account via the configured strategy.
+
+    Bare `register_one()` selects [register].strategy (default 'ui') and injects
+    the shared services — backward-compatible with the old no-arg call sites.
+    """
+    if strategy is None:
+        name = stt.register_config()["strategy"]
+        factory = _STRATEGIES.get(name)
+        if factory is None:
+            raise SystemExit(f"未知 register.strategy: {name!r}；可选 {list(_STRATEGIES)}")
+        strategy = factory()
+    if provider is None:
+        provider = CloudflareTempEmail(stt.temp_email_config())
+    if proxy_driver is None:
+        proxy_driver = proxy.ProxyDriver(stt.proxy_config())
+    return strategy.register(provider=provider, proxy_driver=proxy_driver, captcha=captcha)
+
+
+# --- register (UI coordinate orchestration) ----------------------------
+
+def _ui_register(*, provider: EmailProvider | None = None) -> dict[str, Any]:
     """Create one ElevenLabs account via temp-mail + real Chrome, then return account."""
     try:
         import pyautogui, pyperclip, pygetwindow as gw
     except ImportError:
         raise SystemExit("auto-register needs pyautogui pyperclip pygetwindow")
 
-    provider = CloudflareTempEmail(stt.temp_email_config())
+    provider = provider or CloudflareTempEmail(stt.temp_email_config())
     stt._rlog("创建临时邮箱...")
     addr = provider.create_address()
     email = addr.address
