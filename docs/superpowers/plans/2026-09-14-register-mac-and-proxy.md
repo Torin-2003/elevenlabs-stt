@@ -147,3 +147,10 @@
 - **依赖顺序**：1/2 独立；3 依赖 1/2；4 依赖 3（填 UI 空壳）；5 依赖 4（满足 PlatformDriver）；6 依赖 4（编排传 proxy）；7 收尾。TDD 每 Task RED→GREEN→commit。
 - **零回退**：Task 4 逐字搬 Windows 代码；`register_one` 裸调经 dispatcher→ui→UICoordinateStrategy，等价旧流程。
 - **占位符**：无 TBD/TODO。
+
+## 执行偏差记录（实际实现 vs 计划）
+
+- **Task 3 用「移动」而非「占位」**：计划原写 UICoordinateStrategy 在 Task 3 建空壳、Task 4 从 spec 重写。实际改为——Task 2 把旧 `register_one` 编排整体保留为 `_ui_register`（改用 provider，保持可运行）；Task 3 让 `register_one` 变 dispatcher、UICoordinateStrategy 委托 `_ui_register`；Task 4 把 Windows 代码逐字搬进 `WinDriver`、`_ui_register` 就地重构为 `UICoordinateStrategy.register` + 模块级 helper。理由：绝不从 spec 重打 battle-tested 的 Win32 前台代码，只移动它，杜绝重写引入回退。
+- **新增 `PlatformDriver.mod_key`**：抽取时发现平台差异不止窗口管理——剪贴板/全选/地址栏快捷键在 Win 是 `ctrl`、Mac 是 `command`。故 `PlatformDriver` 增 `mod_key` 属性（WinDriver=`ctrl`，MacDriver=`command`），`_Input` helper 用它。spec §4.1 已同步该点的动机（"键序跨平台一致"）。
+- **测试载体确认**：`python` 在开发机不可用，实际用 `python3`（3.14.7）。所有 `_check_*` 加进 `selfcheck.py::run()`，`python3 selfcheck.py` 全绿。
+- **Task 4 提前含 proxy 传参**：`UICoordinateStrategy.register` 在 Task 4 即写 `proxy=proxy_url` 调 stt；Task 6 补上 stt 侧 `proxy=` 形参（其间仅 selfcheck 绿、真实注册需 Task 6 落地，符合 feature 分支中间态约定）。
