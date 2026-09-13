@@ -68,12 +68,16 @@ class MacDriver:
     def find_profile_window(self, profile_dir, timeout_s):
         # A fresh profile opens exactly one window; find the one whose active
         # tab is the sign-up page (AppleScript can't map a window to a PID
-        # cleanly, but the URL is unambiguous here).
+        # cleanly, but the URL is unambiguous here). Then maximize it to the
+        # screen so the fraction-based click coordinates map onto a large,
+        # stable area — mirrors the Windows restore+maximize step.
         script = (
+            'tell application "Finder" to set d to bounds of window of desktop\n'
             f'tell application "{self._app}"\n'
             ' repeat with w in windows\n'
             '  try\n'
             '   if (URL of active tab of w) starts with "https://elevenlabs.io/app/sign-up" then\n'
+            '    set bounds of w to d\n'
             '    set b to bounds of w\n'
             '    return ((item 1 of b) as text) & "," & ((item 2 of b) as text) & ","'
             ' & ((item 3 of b) as text) & "," & ((item 4 of b) as text)\n'
@@ -87,8 +91,8 @@ class MacDriver:
             time.sleep(0.5)
             try:
                 res = _osascript(script)
-            except SystemExit:
-                res = ""  # app not scriptable yet right after launch; retry
+            except (SystemExit, subprocess.TimeoutExpired):
+                res = ""  # app not scriptable yet / permission prompt pending; retry
             if res:
                 x1, y1, x2, y2 = (int(v) for v in res.split(","))
                 return MacWindow(left=x1, top=y1, width=x2 - x1, height=y2 - y1, app=self._app)

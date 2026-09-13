@@ -28,6 +28,15 @@ class ProxyDriver:
         self._strict = bool(cfg.get("strict", False))
         self._cursor = 0
 
+    @property
+    def has_proxies(self) -> bool:
+        """True if any proxies are configured (regardless of disabled state).
+
+        Lets a caller tell 'no proxy configured → direct' apart from 'all
+        proxies disabled → falling back to direct', so it can warn on the latter.
+        """
+        return bool(self._proxies)
+
     def _live(self) -> list[Proxy]:
         now = time.time()
         return [p for p in self._proxies if p.disabled_until <= now]

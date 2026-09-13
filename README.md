@@ -160,15 +160,18 @@ stt selfcheck          离线自检（不联网）
 
 1. **授予 Accessibility 权限**：System Settings → Privacy & Security → Accessibility，把你的终端 app（Terminal / iTerm）打开开关。否则自动化的键盘鼠标事件会被系统静默丢弃，注册会卡在填表这一步。
 2. **浏览器**：默认探测 `/Applications/Google Chrome.app`，其次 `/Applications/Brave Browser.app`。都不在标准路径时，设 `export ELEVENLABS_STT_CHROME="/path/to/浏览器可执行文件"`。
-3. 运行期间会弹出一个临时 Chrome/Brave 窗口，请勿手动切走或最小化，直到日志显示「注册完成」。
+3. **别让日常浏览器占用同一个 app**：注册用一个独立临时 profile，但 AppleScript 按 app 名寻址——如果你的日常 Chrome 正开着，临时 Chrome 窗口可能对 AppleScript 不可见（会 30s 超时）。要么先关掉日常浏览器，要么用 `ELEVENLABS_STT_CHROME` 指向你**不**日常使用的那个牌子（Chrome / Brave 二选一）。
+4. 运行期间会弹出一个临时 Chrome/Brave 窗口，请勿手动切走或最小化，直到日志显示「注册完成」。第一次运行 macOS 可能弹「终端想要控制 Chrome」的自动化授权，需同意。
 
 ### 代理（`[proxy]`，可选）
 
 给注册流程加代理池（Chrome 与 Firebase/ElevenLabs 的 API 调用共用一个代理）：
 
 - **必须用住宅 / 轮换 IP**——ElevenLabs 政策为每 IP 一个免费账号，数据中心 IP 会被 ElevenLabs 与 hCaptcha 直接标记。
+- **`ui` 策略的 Chrome 侧不支持带账密的代理**：Chromium 的 `--proxy-server` 不接受 `user:pass@` 内联凭证（会弹出无法自动关闭的认证框）。`ui` 策略请用 **IP 白名单**代理；API 调用侧（httpx）虽支持账密，但两侧需一致，否则只有 httpx 走代理、Chrome 直连。
+- `socks5://` 代理的 API 调用侧需 `pip install "httpx[socks]"`（Chrome 原生支持 SOCKS）。
 - 留空即直连（默认，日常转录流量始终直连、不走代理）。
-- 连续失败 `fail_threshold` 次的代理会被禁用 `cooldown_secs` 秒后重试；`strict = true` 时全池不可用直接报错，`false` 时降级直连。
+- 连续失败 `fail_threshold` 次的代理会被禁用 `cooldown_secs` 秒后重试；`strict = true` 时全池不可用直接报错，`false` 时降级直连（会打印一行「所有代理已禁用，本次直连注册」告警）。
 
 ## 批量转录与自动分配
 

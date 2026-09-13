@@ -358,9 +358,11 @@ def run() -> int:
 
 def _check_proxy_driver() -> None:
     now = time.time()
-    # empty pool → always direct
+    # empty pool → always direct; has_proxies distinguishes "none" from "all disabled"
     d = proxy.ProxyDriver({"proxies": [], "fail_threshold": 3, "cooldown_secs": 900, "strict": False})
     assert d.pick() is None, "empty pool must yield direct connection"
+    assert d.has_proxies is False, "empty pool has no proxies"
+    assert proxy.ProxyDriver({"proxies": ["http://a"]}).has_proxies is True
 
     # round-robin over two live proxies
     cfg = {"proxies": ["http://a", "http://b"], "fail_threshold": 2, "cooldown_secs": 900, "strict": False}
@@ -583,7 +585,21 @@ def _check_register_orchestration() -> None:
         except SystemExit:
             pass
         assert "kill" in [c if isinstance(c, str) else c[0] for c in calls], "kill must run in finally"
+        assert ("launch", "http://p") in calls, "picked proxy_url must reach launch_chrome"
         assert marks == ["http://p"], "failure must mark_fail the picked proxy"
+
+        # all-proxies-disabled + strict=False → warn and register direct (proxy_url None)
+        calls.clear()
+        logs: list = []
+        stt.REGISTER_LOG = lambda m: logs.append(m)
+        pd3 = proxy.ProxyDriver({"proxies": ["http://d"], "fail_threshold": 1,
+                                 "cooldown_secs": 900, "strict": False})
+        pd3.mark_fail(pd3.pick())  # disable the only proxy
+        register.UICoordinateStrategy(platform=FakePlatform()).register(
+            provider=FakeProvider(), proxy_driver=pd3)
+        assert ("launch", None) in calls, "all-disabled + strict=False → direct"
+        assert any("所有代理已禁用" in m for m in logs), "must warn when falling back to direct"
+        stt.REGISTER_LOG = lambda _m: None
     finally:
         for n, fn in saved.items():
             setattr(register, n, fn)

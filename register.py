@@ -155,7 +155,10 @@ def _default_platform_driver() -> PlatformDriver:
         from register_platform_mac import MacDriver
         return MacDriver()
     if os.name == "nt":
-        from register_platform_win import WinDriver
+        try:
+            from register_platform_win import WinDriver
+        except ImportError:
+            raise SystemExit("auto-register needs pyautogui pyperclip pygetwindow")
         return WinDriver()
     raise SystemExit(f"register 目前只支持 macOS 与 Windows；当前平台: {sys.platform}")
 
@@ -170,7 +173,12 @@ class UICoordinateStrategy:
     def register(self, *, provider: EmailProvider, proxy_driver: proxy.ProxyDriver,
                  captcha: "CaptchaSolver | None" = None) -> dict[str, Any]:
         platform = self._platform or _default_platform_driver()
+        if getattr(platform, "mod_key", None) == "command":
+            stt._rlog("提示：macOS 首次运行需在 系统设置→隐私与安全性→辅助功能 给终端授权，"
+                      "否则键鼠自动化会被静默丢弃、注册会卡在填表这一步")
         picked = proxy_driver.pick()
+        if picked is None and proxy_driver.has_proxies:
+            stt._rlog("警告：所有代理已禁用，本次直连注册")
         proxy_url = picked.url if picked else None
         profile_dir = pathlib.Path(tempfile.mkdtemp(prefix="elevenlabs-stt-chrome-"))
         _write_no_password_prefs(profile_dir)
@@ -213,7 +221,9 @@ class UICoordinateStrategy:
             if picked:
                 proxy_driver.mark_ok(picked)
             return account
-        except BaseException:
+        except (Exception, SystemExit):
+            # any registration failure penalizes the proxy; KeyboardInterrupt /
+            # GeneratorExit propagate without marking a healthy proxy failed.
             if picked:
                 proxy_driver.mark_fail(picked)
             raise
