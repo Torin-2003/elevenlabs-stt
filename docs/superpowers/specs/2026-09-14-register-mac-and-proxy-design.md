@@ -70,7 +70,7 @@ register.py
     │   ├─ UICoordinateStrategy             ← 本轮实现（现有 Win 流程 + Mac）
     │   │     └─ PlatformDriver (Protocol)  ← UI 策略内部：OS 窗口管理
     │   │         ├─ WinDriver              (现有 register.py Windows 代码搬入)
-    │   │         └─ MacDriver              (新增：AppleScript + pyautogui)
+    │   │         └─ MacDriver              (新增：System Events by PID + pyautogui)
     │   ├─ HTTPProtocolStrategy             ← 扩展点（本轮 NotImplementedError 占位）
     │   │     用 curl_cffi + Firebase 流程 + CaptchaSolver
     │   └─ StealthCDPStrategy               ← 扩展点（本轮 NotImplementedError 占位）
@@ -214,37 +214,33 @@ class PlatformDriver(Protocol):
 
 #### 4.1.2 macOS driver（`register_platform_mac.py`）
 
-**Chrome 路径探测**（顺序）：
+> **实现已在真机验证**（2026-09-14，Chrome+Brave 均在运行的多实例环境）。以下为验证后的实际方案，与初版设计的差异在段末「真机修正」列出。
 
-1. `$ELEVENLABS_STT_CHROME` 环境变量（用户覆盖）。
-2. `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`
-3. `/Applications/Brave Browser.app/Contents/MacOS/Brave Browser`（用户 `CLAUDE.md` 声明默认 Brave；两者命令行 flag 兼容）
-4. `mdfind "kMDItemCFBundleIdentifier == 'com.google.Chrome'"` 兜底。
+**Chrome 路径探测**（顺序）：`$ELEVENLABS_STT_CHROME` 覆盖 → `/Applications/Google Chrome.app/...` → `/Applications/Brave Browser.app/...`（Chrome 装机面更广，故优先；用独立临时 profile，不复用日常 session）。找不到 → `SystemExit`（提示设 `$ELEVENLABS_STT_CHROME`）。
 
-找不到 → `SystemExit("register 需要 Chrome 或 Brave，未在标准路径找到；设 $ELEVENLABS_STT_CHROME 指向可执行文件")`。
+**`launch_chrome`**：`subprocess.Popen([chrome, "--user-data-dir=…", "--no-first-run", "--new-window", "--window-position=40,40", "--window-size=1280,860", "--disable-save-password-bubble", *(["--proxy-server="+proxy] if proxy else []), signup_url])`。**直接起二进制**（不走 `open`），使 `popen.pid` 就是新实例主进程——这是按 PID 定位窗口的前提。存 `self._pid = popen.pid`。
 
-**`launch_chrome`**：`subprocess.Popen([chrome_path, "--user-data-dir=…", "--no-first-run", "--new-window", "--window-position=40,40", "--disable-save-password-bubble", *(["--proxy-server=" + proxy] if proxy else []), signup_url])`。不需要 `STARTUPINFO`，不需要 `CREATE_NEW_PROCESS_GROUP`。
-
-**`find_profile_window`**：用 AppleScript 查询同 PID 的 Chrome window，返回 `bounds`（AppleScript 原生给 `{x1, y1, x2, y2}`）：
+**`find_profile_window`**：**用 System Events 按 `popen.pid` 定位本实例的 window 1**，而非 `tell application "Google Chrome"`。真机验证：`tell application by name` 会寻址 macOS 为该 bundle 注册的实例（用户的日常浏览器），根本看不到我们的临时 `--user-data-dir` 实例的窗口。fresh profile 只有一个窗口（window 1）。Chrome 在 macOS **不遵守** `--window-position/--window-size`（真机上窗口落到了副屏、负坐标、尺寸不符），故在此**用 AX `set position/size` 把窗口归一到主屏固定 (40,40)/1280×860**，再读回真实几何：
 
 ```applescript
-tell application "Google Chrome"
-    set win to first window whose id is not missing value
-    return bounds of win
+tell application "System Events"
+    set p to item 1 of (every process whose unix id is <PID>)
+    set w to window 1 of p
+    set position of w to {40, 40}
+    set size of w to {1280, 860}
+    return position & size of w   -- 读回 {x,y}+{w,h}
 end tell
 ```
 
-按 `popen.pid` 过滤（AppleScript 拿不到 PID 时，退回：轮询直到该 profile_dir 下 `Default/Preferences` 存在 + 出现「新 window，1s 内 bounds 稳定」即视为目标窗口）。返回的 `WindowHandle` 是 `namedtuple` `(left, top, width, height, chrome_pid)`。
+返回 `MacWindow(left, top, width, height, app)`。轮询到 timeout；`_osascript` 的 `SystemExit`/`TimeoutExpired`（首运行 Accessibility 授权弹窗挂起）都吞掉重试。
 
-**`ensure_foreground`**：
-```applescript
-tell application "Google Chrome" to activate
-```
-比 Windows 简单一个量级 —— macOS 不允许后台进程无声抢前台，但用户主动运行的 CLI 是前台进程，`activate` 直接生效。**前置条件**：终端 app（iTerm/Terminal）需要 **Accessibility 权限**（System Settings → Privacy & Security → Accessibility），否则 PyAutoGUI 的键盘/鼠标事件被系统丢弃。README 会把这一步写进「首次运行」。
+**`ensure_foreground`**：`set frontmost of (process whose unix id is <PID>) to true`（按 PID 抬前台，不用 `activate` by name——同样会抬错实例）。
 
-**`kill_profile`**：`subprocess.run(["pkill", "-f", str(profile_dir)])` + `shutil.rmtree` 重试。
+**`kill_profile`**：`popen.terminate()`（超时 `popen.kill()`）+ `pkill -f <profile_dir 的 basename>` 兜底。**用 basename 不用全路径**：macOS 把 `/var` 解析成 `/private/var` 写进进程 cmdline，全路径 pattern 匹配不上（真机验证 bug）。再 `shutil.rmtree` 重试。
 
-**依赖**：仅 macOS 自带 `osascript` / `pkill`；`pyautogui` / `pyperclip` 已是跨平台可用（Mac 版内部会走 CGEvent / pbcopy）；**不需要** `pygetwindow`（Mac 支持很差），窗口 bounds 用 AppleScript 直接拿。
+**依赖**：仅 macOS 自带 `osascript`/`pkill`；`pyautogui`/`pyperclip` 跨平台；**不需要** `pygetwindow`。System Events 的窗口读写与 pyautogui 键鼠同属 **Accessibility 权限**。
+
+**真机修正（vs 初版设计）**：① 窗口定位从「AppleScript by app-name + URL 匹配」改为「System Events by PID」——初版在日常浏览器运行时会失败（#5 已由此解决，非仅文档）。② `--window-position/--window-size` 不被遵守 → 改由 AX `set position/size` 归一到主屏（初版打算 maximize，但 `bounds of window of desktop` 在多显示器返回并集会跨屏，弃用）。③ `kill_profile` 全路径→basename。以上均已在真机 launch→find→归一→前台→kill+清理 全链路验证通过（未触碰日常 Chrome/Brave）。**仍需真机标定**：0.50/0.56/0.62/0.65 点击分数是按 Windows 最大化窗口调的，在 1280×860 的真实 sign-up 页需重新校准（要跑一次真实注册）。
 
 #### 4.1.3 平台选择
 
