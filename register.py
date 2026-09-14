@@ -61,6 +61,16 @@ class CloudflareTempEmail:
         self._domains = list(cfg.get("domains") or ([cfg["domain"]] if cfg.get("domain") else []))
         self._cursor = 0
 
+    def _headers(self, extra: dict[str, str]) -> dict[str, str]:
+        # A private site (worker PASSWORDS set) gates every path except /open_api
+        # and /telegram behind x-custom-auth — including /admin/* and the mail
+        # poll — so attach it to every request when site_password is configured.
+        h = dict(extra)
+        site = self._cfg.get("site_password")
+        if site:
+            h["x-custom-auth"] = site
+        return h
+
     def _next_domain(self) -> str:
         if not self._domains:
             raise SystemExit("temp_email.domain / temp_email.domains are required")
@@ -80,15 +90,12 @@ class CloudflareTempEmail:
         with httpx.Client(timeout=30) as client:
             if cfg.get("use_admin_path", True) and cfg.get("admin_password"):
                 r = client.post(f"{base}/admin/new_address", json=body,
-                                headers={"x-admin-auth": cfg["admin_password"]})
+                                headers=self._headers({"x-admin-auth": cfg["admin_password"]}))
                 if r.status_code < 400:
                     return self._to_address(r.json())
                 if r.status_code not in (401, 403):
                     raise SystemExit(f"temp-email create failed ({r.status_code}): {r.text[:300]}")
-            headers = {}
-            if cfg.get("site_password"):
-                headers["x-custom-auth"] = cfg["site_password"]
-            r = client.post(f"{base}/api/new_address", json=body, headers=headers)
+            r = client.post(f"{base}/api/new_address", json=body, headers=self._headers({}))
             if r.status_code >= 400:
                 raise SystemExit(f"temp-email create failed ({r.status_code}): {r.text[:300]}")
             return self._to_address(r.json())
@@ -102,7 +109,7 @@ class CloudflareTempEmail:
         """Return newest ElevenLabs verification link from the temp mailbox."""
         base = str(self._cfg["base_url"]).rstrip("/")
         deadline = time.time() + float(timeout_s)
-        headers = {"Authorization": f"Bearer {addr.token}"}
+        headers = self._headers({"Authorization": f"Bearer {addr.token}"})
         with httpx.Client(timeout=30) as client:
             while time.time() < deadline:
                 r = client.get(f"{base}/api/parsed_mails", params={"limit": 20, "offset": 0},

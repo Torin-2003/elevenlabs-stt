@@ -347,6 +347,7 @@ def run() -> int:
 
     _check_proxy_driver()
     _check_email_provider()
+    _check_site_password_headers()
     _check_register_dispatch()
     _check_register_orchestration()
     _check_mac_chrome_discovery()
@@ -457,6 +458,47 @@ def _check_email_provider() -> None:
         def poll_verification_link(self, addr, pattern, timeout_s, interval_s):
             return "https://elevenlabs.io/app/action?oobCode=Z"
     assert FakeProvider().create_address().address == "x@t.co"
+
+
+def _check_site_password_headers() -> None:
+    import httpx, register
+    seen: list = []
+
+    class _Resp:
+        status_code = 200
+        def __init__(self, payload): self._p = payload
+        def json(self): return self._p
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, url, json=None, headers=None):
+            seen.append(("POST", url, headers or {}))
+            return _Resp({"address": "x@for-in.top", "jwt": "tok"})
+        def get(self, url, params=None, headers=None):
+            seen.append(("GET", url, headers or {}))
+            return _Resp({"results": [{"text": "go https://elevenlabs.io/app/action?mode=verifyEmail&oobCode=Z end"}]})
+
+    cfg = {"base_url": "https://m.x", "domain": "for-in.top", "domains": ["for-in.top"],
+           "admin_password": "adm", "site_password": "sitepw", "use_admin_path": True}
+    orig = httpx.Client
+    httpx.Client = _Client
+    try:
+        prov = register.CloudflareTempEmail(cfg)
+        addr = prov.create_address()
+        prov.poll_verification_link(addr, register.VERIFY_LINK_PATTERN, 5, 0.1)
+        admin = next(h for m, u, h in seen if "/admin/new_address" in u)
+        assert admin.get("x-custom-auth") == "sitepw" and admin.get("x-admin-auth") == "adm", admin
+        poll = next(h for m, u, h in seen if "/parsed_mails" in u)
+        assert poll.get("x-custom-auth") == "sitepw", poll
+        # no site_password → no x-custom-auth header
+        seen.clear()
+        register.CloudflareTempEmail({**cfg, "site_password": ""}).create_address()
+        admin2 = next(h for m, u, h in seen if "/admin/new_address" in u)
+        assert "x-custom-auth" not in admin2, admin2
+    finally:
+        httpx.Client = orig
 
 
 def _check_register_dispatch() -> None:
