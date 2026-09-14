@@ -12,6 +12,8 @@ First run needs the browser: `python -m camoufox fetch`.
 """
 from __future__ import annotations
 
+import json
+import os
 import time
 from typing import Any
 from urllib.parse import urlparse, parse_qs
@@ -36,6 +38,48 @@ def _geoip_available() -> bool:
         return True
     except Exception:
         return False
+
+
+def _attach_capture(page, path: str) -> None:
+    """Append the signup/captcha request chain to a JSONL file — a protocol-spike
+    aid, active only when EL_CAPTURE=<path> is set. Records non-GET requests (the
+    signUp POST, Firebase/hCaptcha calls) plus hCaptcha GETs, skipping asset GETs.
+    Best-effort: every handler is wrapped so capture never breaks a registration."""
+    hosts = ("hcaptcha.com", "identitytoolkit", "securetoken",
+             "elevenlabs.io", "api.us.elevenlabs", "recaptcha")
+
+    def _rec(d: dict) -> None:
+        try:
+            with open(path, "a") as f:
+                f.write(json.dumps(d, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def _on_request(req) -> None:
+        try:
+            url = req.url
+            if not any(h in url for h in hosts):
+                return
+            if req.method == "GET" and "hcaptcha" not in url:
+                return  # skip page-asset GETs; keep POSTs + hCaptcha calls
+            body = None
+            try:
+                body = req.post_data
+            except Exception:
+                pass
+            _rec({"t": "req", "method": req.method, "url": url, "post_data": body})
+        except Exception:
+            pass
+
+    def _on_response(resp) -> None:
+        try:
+            if any(h in resp.url for h in hosts):
+                _rec({"t": "resp", "status": resp.status, "url": resp.url})
+        except Exception:
+            pass
+
+    page.on("request", _on_request)
+    page.on("response", _on_response)
 
 
 def _camoufox_proxy(url: str | None) -> dict[str, str] | None:
@@ -145,6 +189,10 @@ class CamoufoxStrategy:
             stt._rlog("启动 Camoufox 并打开注册页...")
             with Camoufox(**launch) as browser:
                 page = browser.new_page()
+                _cap_path = os.environ.get("EL_CAPTURE")
+                if _cap_path:
+                    _attach_capture(page, _cap_path)
+                    stt._rlog(f"网络抓包已开启 -> {_cap_path}")
                 # domcontentloaded (not networkidle — this SPA never idles); the
                 # selector wait is the real readiness signal.
                 page.goto(SIGNUP_URL, wait_until="domcontentloaded", timeout=60000)
