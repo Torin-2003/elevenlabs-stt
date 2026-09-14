@@ -9,6 +9,7 @@ extraction, no weighting — see the design doc's YAGNI list. Use residential
 from __future__ import annotations
 
 import dataclasses
+import random
 import secrets
 import time
 from typing import Any
@@ -41,7 +42,11 @@ class ProxyDriver:
         self._threshold = int(cfg.get("fail_threshold", 3))
         self._cooldown = float(cfg.get("cooldown_secs", 900))
         self._strict = bool(cfg.get("strict", False))
-        self._cursor = 0
+        # Random start so a fresh driver (register_one builds one per call) doesn't
+        # always begin at proxy[0]; pick() then round-robins from here. Combined
+        # with reusing ONE driver across a batch (see web.register_pool), a batch
+        # spreads across the whole static-IP pool instead of hammering one IP.
+        self._cursor = random.randrange(len(self._proxies)) if self._proxies else 0
 
     @property
     def has_proxies(self) -> bool:

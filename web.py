@@ -23,6 +23,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import audio_split
+import proxy
 import register
 import stt
 
@@ -315,9 +316,12 @@ def do_register(target: int | None) -> dict:
         store = stt.load_accounts()
         fresh = stt.fresh_count(store, acfg["fresh_threshold"])
         _REG_PROGRESS["total"] = max(0, tgt - fresh)
+        # One driver for the whole batch so its round-robin cursor persists across
+        # accounts (a fresh driver per account would reset to one IP every time).
+        proxy_driver = proxy.ProxyDriver(stt.proxy_config(CONFIG_PATH))
         while fresh < tgt:
             _reg_log(f"账号池 {fresh}/{tgt}，开始注册第 {_REG_PROGRESS['done'] + 1} 个账号")
-            account = register.register_one()
+            account = register.register_one(proxy_driver=proxy_driver)
             with _LOCK:
                 stt.persist_registered(store, account)
             _REG_PROGRESS["done"] += 1
