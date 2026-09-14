@@ -359,6 +359,13 @@ def run() -> int:
 
 def _check_proxy_driver() -> None:
     now = time.time()
+    # sticky-session substitution: {session} → fresh id per call; else unchanged
+    assert proxy.with_session(None) is None
+    assert proxy.with_session("http://u:p@g:1") == "http://u:p@g:1"
+    s1 = proxy.with_session("http://u-session-{session}:p@g:1")
+    assert "{session}" not in s1 and s1 != "http://u-session-{session}:p@g:1"
+    assert proxy.with_session("http://x-{session}@g") != proxy.with_session("http://x-{session}@g")
+
     # empty pool → always direct; has_proxies distinguishes "none" from "all disabled"
     d = proxy.ProxyDriver({"proxies": [], "fail_threshold": 3, "cooldown_secs": 900, "strict": False})
     assert d.pick() is None, "empty pool must yield direct connection"

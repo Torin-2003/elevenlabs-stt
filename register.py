@@ -186,7 +186,8 @@ class UICoordinateStrategy:
         picked = proxy_driver.pick()
         if picked is None and proxy_driver.has_proxies:
             stt._rlog("警告：所有代理已禁用，本次直连注册")
-        proxy_url = picked.url if picked else None
+        # one sticky IP for this whole registration (see proxy.with_session)
+        proxy_url = proxy.with_session(picked.url) if picked else None
         profile_dir = pathlib.Path(tempfile.mkdtemp(prefix="elevenlabs-stt-chrome-"))
         _write_no_password_prefs(profile_dir)
         popen = None

@@ -16,6 +16,7 @@ import time
 from typing import Any
 from urllib.parse import urlparse, parse_qs
 
+import proxy as _proxy
 import stt
 from register import (EmailProvider, VERIFY_LINK_PATTERN, CloudflareTempEmail,
                       SIGNUP_URL)
@@ -59,7 +60,8 @@ class CamoufoxStrategy:
         picked = proxy_driver.pick()
         if picked is None and proxy_driver.has_proxies:
             stt._rlog("警告：所有代理已禁用，本次直连注册")
-        proxy_url = picked.url if picked else None
+        # one sticky IP for this whole registration (browser + API calls)
+        proxy_url = _proxy.with_session(picked.url) if picked else None
 
         launch: dict[str, Any] = {"headless": headless}
         cam_proxy = _camoufox_proxy(proxy_url)

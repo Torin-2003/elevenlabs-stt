@@ -9,8 +9,23 @@ extraction, no weighting — see the design doc's YAGNI list. Use residential
 from __future__ import annotations
 
 import dataclasses
+import secrets
 import time
 from typing import Any
+
+
+def with_session(url: str | None) -> str | None:
+    """Resolve a per-registration sticky session in a proxy URL.
+
+    Residential providers keep one IP for a "session" encoded in the username
+    (e.g. `user-session-<id>`). Put a literal `{session}` in the pool URL and
+    this swaps in a fresh random id per call — so one registration (browser +
+    API calls) shares one IP, and each account gets a different IP. No
+    placeholder → returned unchanged (pure per-request rotation / static).
+    """
+    if url and "{session}" in url:
+        return url.replace("{session}", secrets.token_hex(6))
+    return url
 
 
 @dataclasses.dataclass
