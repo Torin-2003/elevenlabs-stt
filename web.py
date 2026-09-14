@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import audio_split
@@ -297,13 +298,22 @@ def _reg_log(msg: str) -> None:
         del _REG_PROGRESS["lines"][:-500]
 
 
+def _register_worker(pcfg: dict, proxy_url: str | None) -> dict:
+    """Register one account through a SPECIFIC proxy, via its own single-proxy
+    driver so concurrent workers never share an exit IP. Returns the account dict
+    (caller persists under the lock)."""
+    driver = proxy.ProxyDriver({**pcfg, "proxies": [proxy_url] if proxy_url else []})
+    return register.register_one(proxy_driver=driver)
+
+
 def do_register(target: int | None) -> dict:
     """Warm the pool to `target` fresh accounts via the real register flow,
     streaming stt's step logs into _REG_PROGRESS for the UI to poll.
 
-    ponytail: inlines cmd_pool_warm's small loop instead of delegating, so `done`
-    counts accurately and accounts already registered survive a mid-run failure
-    (saved every round). target=None falls back to the configured pool_target.
+    Runs [register].concurrency accounts in parallel (capped by the number of
+    proxies, so concurrent registrations always use distinct exit IPs); 1 =
+    sequential. Every success is saved under the lock, so accounts survive a
+    mid-run failure. target=None falls back to the configured pool_target.
     """
     with _REG_LOCK:
         if _REG_PROGRESS["active"]:
@@ -312,20 +322,59 @@ def do_register(target: int | None) -> dict:
     stt.REGISTER_LOG = _reg_log
     try:
         acfg = stt.accounts_config(CONFIG_PATH)
+        rcfg = stt.register_config(CONFIG_PATH)
+        pcfg = stt.proxy_config(CONFIG_PATH)
         tgt = target or acfg["pool_target"]
         store = stt.load_accounts()
         fresh = stt.fresh_count(store, acfg["fresh_threshold"])
         _REG_PROGRESS["total"] = max(0, tgt - fresh)
-        # One driver for the whole batch so its round-robin cursor persists across
-        # accounts (a fresh driver per account would reset to one IP every time).
-        proxy_driver = proxy.ProxyDriver(stt.proxy_config(CONFIG_PATH))
-        while fresh < tgt:
-            _reg_log(f"账号池 {fresh}/{tgt}，开始注册第 {_REG_PROGRESS['done'] + 1} 个账号")
-            account = register.register_one(proxy_driver=proxy_driver)
-            with _LOCK:
-                stt.persist_registered(store, account)
-            _REG_PROGRESS["done"] += 1
-            fresh = stt.fresh_count(store, acfg["fresh_threshold"])
+
+        proxies = pcfg.get("proxies") or []
+        conc = max(1, int(rcfg.get("concurrency", 1) or 1))
+        # cap concurrency at the IP count so concurrent workers never share an IP
+        workers = max(1, min(conc, len(proxies)) if proxies else 1)
+
+        # Pre-warm route-bypass once (all static-ISP ports share one host) so
+        # concurrent workers hit the cached route instead of racing on sudo route.
+        if proxies and pcfg.get("route_bypass"):
+            try:
+                import proxy_route
+                proxy_route.prepare(proxies[0])
+            except Exception as e:
+                _reg_log(f"route 预热失败（继续）: {e}")
+
+        if workers <= 1:
+            proxy_driver = proxy.ProxyDriver(pcfg)  # one driver → cursor rotates the pool
+            while fresh < tgt:
+                _reg_log(f"账号池 {fresh}/{tgt}，开始注册第 {_REG_PROGRESS['done'] + 1} 个账号")
+                account = register.register_one(proxy_driver=proxy_driver)
+                with _LOCK:
+                    stt.persist_registered(store, account)
+                _REG_PROGRESS["done"] += 1
+                fresh = stt.fresh_count(store, acfg["fresh_threshold"])
+        else:
+            _reg_log(f"并行注册：{workers} 并发 / {len(proxies)} 个 IP")
+            attempts, guard, pidx = 0, max(3, (tgt - fresh) * 3), 0
+            while fresh < tgt and attempts < guard:
+                need = tgt - fresh
+                with ThreadPoolExecutor(max_workers=workers) as ex:
+                    futs = []
+                    for _ in range(need):
+                        purl = proxies[pidx % len(proxies)] if proxies else None
+                        pidx += 1
+                        attempts += 1
+                        futs.append(ex.submit(_register_worker, pcfg, purl))
+                    for fut in as_completed(futs):
+                        try:
+                            account = fut.result()
+                        except (Exception, SystemExit) as e:
+                            _reg_log(f"跳过一个失败账号: {e}")
+                            continue
+                        with _LOCK:
+                            stt.persist_registered(store, account)
+                            _REG_PROGRESS["done"] += 1
+                        _reg_log(f"注册成功: {account.get('email')}（{stt.cached_remaining(account)} 积分）")
+                fresh = stt.fresh_count(store, acfg["fresh_threshold"])
         _reg_log(f"注册结束：账号池 {fresh}/{tgt}")
         return build_state()
     except (Exception, SystemExit) as e:

@@ -36,6 +36,8 @@ auto_refill = true                       # refill pool to target after each tran
 strategy = "camoufox"                    # camoufox (stealth Firefox + selectors, recommended; needs `pip install camoufox` + `python -m camoufox fetch`) | ui (legacy real-Chrome coordinates) | http (not implemented)
 headless = true                          # camoufox only; true = no window, silent background (NopeCHA solves headless fine — validated); false = visible window to watch
 captcha_addons = ["nopecha"]             # free in-browser hCaptcha solver (Firefox addon, auto-downloaded on first use). ElevenLabs signup shows a VISIBLE hCaptcha even on clean IPs, so a solver is required. NopeCHA free tier = 100 solves/day, no key — but only serves residential/ISP IPs (works on Decodo static-ISP; refuses datacenter). [] = no solver.
+concurrency = 1                          # camoufox only; register this many accounts in parallel (capped at the proxy count so concurrent workers use distinct IPs). 1 = sequential. Higher = faster but more RAM (each = one Firefox) and faster metered-bandwidth burn.
+block_assets = true                      # camoufox only; skip web-font downloads + autoplay media via Firefox prefs to save metered proxy bandwidth (images can't be filtered without breaking the hCaptcha solver, so they load).
 
 [proxy]
 # Upstream proxies for the registration flow (Chrome + Firebase/ElevenLabs httpx
