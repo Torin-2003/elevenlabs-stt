@@ -558,6 +558,36 @@ def account_from_password_signin(email: str, password: str, temp_address: str | 
     return _session_to_account(sess, source="auto")
 
 
+def account_from_firebase_user(raw: str | None) -> dict[str, Any]:
+    """Firebase authUser JSON (the web app's localStorage entry) -> account record.
+
+    Works for whatever sign-in the browser used (Google, email+password, ...): the
+    refresh token is provider-agnostic. Raises SystemExit on anything unusable.
+    """
+    try:
+        user = json.loads(raw) if raw else None
+    except ValueError:
+        user = None
+    if not isinstance(user, dict):
+        raise SystemExit("browser session is not a Firebase user JSON — log in again")
+    if user.get("apiKey", FIREBASE_API_KEY) != FIREBASE_API_KEY:
+        raise SystemExit("browser session belongs to another Firebase project, not ElevenLabs")
+    sts = user.get("stsTokenManager") or {}
+    if not sts.get("refreshToken"):
+        raise SystemExit("browser session has no refresh token — log in again")
+    if not user.get("email"):
+        raise SystemExit("browser session has no email (the account pool is keyed by email)")
+    session = {
+        "apiKey": FIREBASE_API_KEY,
+        "refreshToken": sts["refreshToken"],
+        "localId": user.get("uid") or user.get("localId"),
+        "email": user["email"],
+        "jwt": sts.get("accessToken"),
+        "jwt_exp": (sts["expirationTime"] / 1000.0) if sts.get("expirationTime") else 0,
+    }
+    return _session_to_account(session, source="manual")
+
+
 # ----------------------------------------------------------------- audio
 
 def audio_duration(path: pathlib.Path) -> float | None:
@@ -921,20 +951,8 @@ def cmd_login(args: argparse.Namespace) -> int:
         raw = page.evaluate(f"() => localStorage.getItem({json.dumps(FIREBASE_USER_KEY)})")
         browser.close()
 
-    user = json.loads(raw)
-    sts = user.get("stsTokenManager", {})
-    session = {
-        "apiKey": FIREBASE_API_KEY,
-        "refreshToken": sts.get("refreshToken"),
-        "localId": user.get("uid") or user.get("localId"),
-        "email": user.get("email"),
-        "jwt": sts.get("accessToken"),
-        "jwt_exp": (sts.get("expirationTime", 0) / 1000.0) if sts.get("expirationTime") else 0,
-    }
-    if not session["refreshToken"]:
-        raise SystemExit("login did not yield a refresh token — re-run `stt login`")
+    account = account_from_firebase_user(raw)
     store = load_accounts()
-    account = _session_to_account(session, source="manual")
     upsert_account(store, account)
     save_accounts(store)
     print(f"saved {ACCOUNTS_PATH} (email={account['email']})")

@@ -50,6 +50,32 @@ def run() -> int:
         {"email": "a@b.c", "refreshToken": "rt", "localId": "uid", "jwt": "j", "jwt_exp": 0},
         source="manual")
     assert acct["source"] == "manual" and acct["email"] == "a@b.c" and acct["invalid"] is False
+    # account_from_firebase_user: browser localStorage authUser (Google or any sign-in) → account
+    fb_user = {
+        "uid": "uid-123", "email": "someone@gmail.com", "emailVerified": True,
+        "displayName": "Some One", "isAnonymous": False, "photoURL": "https://lh3.googleusercontent.com/a/x",
+        "providerData": [{"providerId": "google.com", "uid": "1098", "displayName": "Some One",
+                          "email": "someone@gmail.com", "phoneNumber": None,
+                          "photoURL": "https://lh3.googleusercontent.com/a/x"}],
+        "stsTokenManager": {"refreshToken": "rt-abc", "accessToken": "at-xyz",
+                            "expirationTime": 1700000000000},
+        "createdAt": "1690000000000", "lastLoginAt": "1700000000000",
+        "apiKey": stt.FIREBASE_API_KEY, "appName": "[DEFAULT]",
+    }
+    fb = stt.account_from_firebase_user(json.dumps(fb_user))
+    assert (fb["email"], fb["refreshToken"], fb["localId"], fb["jwt"]) == \
+        ("someone@gmail.com", "rt-abc", "uid-123", "at-xyz"), fb
+    assert fb["jwt_exp"] == 1700000000.0 and fb["source"] == "manual", fb
+    assert fb["password"] is None and fb["invalid"] is False, fb
+    for bad in (None, "not json",
+                json.dumps({**fb_user, "stsTokenManager": {"accessToken": "at-xyz"}}),  # no refresh token
+                json.dumps({**fb_user, "email": None}),                                  # pool is keyed by email
+                json.dumps({**fb_user, "apiKey": "AIzaSomeOtherFirebaseProject"})):      # foreign project
+        try:
+            stt.account_from_firebase_user(bad)
+            assert False, f"should reject: {bad!r:.80}"
+        except SystemExit:
+            pass
     # selection: best-fit + margin (offline via fresh credits_known cache; no network)
     now = time.time()
     fake = [

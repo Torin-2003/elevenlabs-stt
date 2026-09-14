@@ -2,11 +2,6 @@
 
 [English](./README.en.md) | **简体中文**
 
-> 将 ElevenLabs 网页版「语音转文本」功能转为命令行脚本，使用你自己的登录账号，复用免费额度。
-
-> [!IMPORTANT]
-> 本项目非 ElevenLabs 官方，也未与之关联。它通过复用网页应用的内部 API 实现，该接口可能随时变更。请使用你自己的账号，并遵守 ElevenLabs 的服务条款。
-
 ## 它做什么
 
 把 `elevenlabs.io/app/speech-to-text` 的网页操作流程（登录 → 上传音频 → 选语言/开关 → 等待转录 → 导出字幕）变成一条命令。脚本复用网页内部 API（而非官方付费 API），因此继承免费账号的积分额度（约 1 万积分 ≈ 12 分钟音频/月）。
@@ -63,19 +58,21 @@ python stt.py pool warm --target 3
 
 复制 `config.example.toml` → `config.toml` 编辑持久默认值，CLI 参数覆盖配置：
 
-| 字段 | 说明 | 默认 |
-|---|---|---|
-| `language` | `auto` 或语言名或 ISO 639-3 代码 | `auto` |
-| `tag_audio_events` | 标记音频事件 | `true` |
-| `include_subtitles` | 包含字幕（网页默认关，脚本强制开） | `true` |
-| `no_verbatim` | 无逐字记录 | `false` |
-| `use_speaker_library` | 从声音库分配声音 | `false` |
-| `vocab` | 关键术语列表，如 `["Maj3r", "V社"]` | `[]` |
-| `export_format` | `srt`/`vtt`/`txt`/`json`/`html`/`pdf`/`docx` | `srt` |
-| `poll_timeout_secs` | 轮询超时秒数 | `600` |
-| `show_cost` | 上传前打印预估积分成本 | `false` |
-| `max_concurrency` | 跨账号并发转录上限；`1` = 回退串行（降级开关） | `4` |
-| `stagger_secs` | 相邻两次上传起始的最小间隔（秒），降低同 IP 突发；`0` = 关闭错峰 | `2.0` |
+
+| 字段                    | 说明                                           | 默认      |
+| --------------------- | -------------------------------------------- | ------- |
+| `language`            | `auto` 或语言名或 ISO 639-3 代码                    | `auto`  |
+| `tag_audio_events`    | 标记音频事件                                       | `true`  |
+| `include_subtitles`   | 包含字幕（网页默认关，脚本强制开）                            | `true`  |
+| `no_verbatim`         | 无逐字记录                                        | `false` |
+| `use_speaker_library` | 从声音库分配声音                                     | `false` |
+| `vocab`               | 关键术语列表，如 `["Maj3r", "V社"]`                   | `[]`    |
+| `export_format`       | `srt`/`vtt`/`txt`/`json`/`html`/`pdf`/`docx` | `srt`   |
+| `poll_timeout_secs`   | 轮询超时秒数                                       | `600`   |
+| `show_cost`           | 上传前打印预估积分成本                                  | `false` |
+| `max_concurrency`     | 跨账号并发转录上限；`1` = 回退串行（降级开关）                   | `4`     |
+| `stagger_secs`        | 相邻两次上传起始的最小间隔（秒），降低同 IP 突发；`0` = 关闭错峰        | `2.0`   |
+
 
 ## 本地 Web UI（可选）
 
@@ -87,7 +84,7 @@ python web.py            # 打开 http://127.0.0.1:8756
 
 - **转录页**：拖拽/多选音频或视频 → 视频由本机 `ffmpeg` 自动提取音轨（界面分「上传中 / 提取音轨中」两阶段）→ 浏览器测时长并预估积分 → 按剩余额度自动分配账号（best-fit）→ 「开始转录」真实上传、轮询、导出，完成后自动下载字幕。「使用的账号」区提供默认折叠的**「高级 · 手动指定账号」**面板：勾选账号即把分配限定在所选集合内（额度不足的账号灰显禁选），手动模式额度不足会直接报错、不会自动注册；清空勾选回到自动分配。转录期间底栏显示**真实分步进度**（已完成/总数计数、并发**活动任务列表**多行展示各文件与阶段、最新日志行），可展开「详情」查看完整滚动日志。
 - **账号管理页**：读取 `accounts.json`，支持搜索/排序/多选/分页与回顶、真实刷新额度（仅刷新勾选账号，多账号并发）、删除、导出 JSON。
-- **登录账号**：弹窗输入邮箱+密码，走 Firebase REST 直接登录并把令牌保存到 `accounts.json`（无需浏览器）。
+- **登录账号**：弹窗提供**「用 Google 登录（粘贴导入）」**——因为 Google 会拦截程序控制的浏览器登录，所以流程是：在你平时的浏览器里用 Google 登录 `elevenlabs.io`，按 F12 在控制台粘贴弹窗给出的一行代码（把 Firebase 登录信息复制到剪贴板），再粘回弹窗点「导入并保存」。后端用 `stt.py` 的解析逻辑还原账号（refresh token 与登录方式无关，Google 账号同样适用）并存入 `accounts.json`。也可以直接输入邮箱+密码，走 Firebase REST 登录。
 - **启动注册机**：弹窗提供完整参数（对应 `config.toml → [temp_email]` 与目标满额账号数），「保存」会写回 `config.toml`（与配置文件双向同步）；「开始批量创建」先保存配置再跑真实 `pool warm` 批量注册。注册期间有分步进度日志：CLI（`stt pool warm` 及转录触发的自动注册）打印到 stderr，WebUI 注册弹窗内实时滚动显示并带 已完成/目标 计数。
 - **功能管理 · 长音频切分页**：上传长音频或视频（视频同样后台抽轨）→ 后端按静音点计算贪心切分方案（每段落在单个满额账号额度内）→ 执行切分并无损导出片段到本地 `out/`，供后续转录；与 CLI `--split` 共用 `audio_split.py` 的切分逻辑。转录页与本页均提供**「跳过长静音」开关**（默认关）：打开后 ≥10s 的静音区间不切进片段、不上传不计费（本页高级参数可调阈值），方案处显示省下的静音时长。
 - 账号池不足以覆盖所有文件时，转录页会提示先 `pool warm`，不会静默注册。
@@ -108,36 +105,40 @@ stt selfcheck          离线自检（不联网）
 
 `transcribe` 参数：
 
-| 参数 | 说明 |
-|---|---|
-| `-c, --config` | 配置文件路径（默认 `config.toml`） |
-| `--lang` | `auto` / 语言名 / ISO 639-3 代码 |
-| `--events / --no-events` | 标记音频事件（默认开） |
-| `--subs / --no-subs` | 包含字幕（默认开） |
-| `--verbatim / --no-verbatim` | 无逐字记录（默认关） |
-| `--voice-lib / --no-voice-lib` | 使用声音库（默认关） |
-| `--vocab` | 逗号分隔的关键术语 |
-| `--format` | 导出格式 |
-| `-o, --output` | 输出文件路径（**仅单文件可用**；多文件时会报错，各文件默认输出 `<名字>.<格式>`） |
-| `--show-cost` | 打印预估积分成本 |
-| `--poll-timeout` | 轮询超时秒数 |
-| `--account` | 限定只用该邮箱的账号分配（可重复传多个）；额度不足时直接报错，不会自动注册 |
-| `--dry-run` | 只打印分配计划后退出，不注册账号也不上传 |
-| `--split` | 按静音把超长音频切成配额内的片段，逐段转录后合并回一份字幕（仅 `srt`/`vtt`/`txt`） |
-| `--chunk-secs` | 每段目标时长上限（秒）；默认由额度自动推导（约 569s） |
-| `--keep-chunks` | 合并成功后保留临时片段文件（默认清理） |
-| `--silence-db` | 静音判定阈值（dB，默认 `-30`） |
-| `--silence-min` | 最短静音时长（秒，默认 `0.5`） |
-| `--skip-silence` | 配合 `--split`：跳过超长静音区间，不上传不计费（段数可能变多，默认关） |
-| `--skip-silence-min` | 触发跳过的最短静音时长（秒，默认 `10`） |
+
+| 参数                             | 说明                                                 |
+| ------------------------------ | -------------------------------------------------- |
+| `-c, --config`                 | 配置文件路径（默认 `config.toml`）                           |
+| `--lang`                       | `auto` / 语言名 / ISO 639-3 代码                        |
+| `--events / --no-events`       | 标记音频事件（默认开）                                        |
+| `--subs / --no-subs`           | 包含字幕（默认开）                                          |
+| `--verbatim / --no-verbatim`   | 无逐字记录（默认关）                                         |
+| `--voice-lib / --no-voice-lib` | 使用声音库（默认关）                                         |
+| `--vocab`                      | 逗号分隔的关键术语                                          |
+| `--format`                     | 导出格式                                               |
+| `-o, --output`                 | 输出文件路径（**仅单文件可用**；多文件时会报错，各文件默认输出 `<名字>.<格式>`）     |
+| `--show-cost`                  | 打印预估积分成本                                           |
+| `--poll-timeout`               | 轮询超时秒数                                             |
+| `--account`                    | 限定只用该邮箱的账号分配（可重复传多个）；额度不足时直接报错，不会自动注册              |
+| `--dry-run`                    | 只打印分配计划后退出，不注册账号也不上传                               |
+| `--split`                      | 按静音把超长音频切成配额内的片段，逐段转录后合并回一份字幕（仅 `srt`/`vtt`/`txt`） |
+| `--chunk-secs`                 | 每段目标时长上限（秒）；默认由额度自动推导（约 569s）                      |
+| `--keep-chunks`                | 合并成功后保留临时片段文件（默认清理）                                |
+| `--silence-db`                 | 静音判定阈值（dB，默认 `-30`）                                |
+| `--silence-min`                | 最短静音时长（秒，默认 `0.5`）                                 |
+| `--skip-silence`               | 配合 `--split`：跳过超长静音区间，不上传不计费（段数可能变多，默认关）           |
+| `--skip-silence-min`           | 触发跳过的最短静音时长（秒，默认 `10`）                             |
+
 
 `accounts` 参数：
 
-| 参数 | 说明 |
-|---|---|
-| `-c, --config` | 配置文件路径（默认 `config.toml`） |
-| `--refresh` | 强制从 API 刷新额度（8 线程并发，进度按完成先后输出到 stderr） |
-| `-e, --email` | 只作用于该账号（可重复）；同时过滤 `--refresh` 范围与列表显示 |
+
+| 参数             | 说明                                     |
+| -------------- | -------------------------------------- |
+| `-c, --config` | 配置文件路径（默认 `config.toml`）               |
+| `--refresh`    | 强制从 API 刷新额度（8 线程并发，进度按完成先后输出到 stderr） |
+| `-e, --email`  | 只作用于该账号（可重复）；同时过滤 `--refresh` 范围与列表显示  |
+
 
 ## 语言
 
@@ -235,19 +236,21 @@ python stt.py transcribe interview.m4a --split --skip-silence
 
 ## 文件
 
-| 文件 | 说明 |
-|---|---|
-| `stt.py` | CLI 与客户端主程序 |
-| `audio_split.py` | 静音检测与切分模块（CLI `--split` 与 Web UI 共用） |
-| `web.py` | 本地 Web UI 服务端（标准库） |
-| `webui.html` | Web UI 单页前端 |
-| `config.example.toml` | 配置示例 |
-| `requirements.txt` | 依赖 |
-| `session.json` | `login` 生成（凭证，已 gitignore） |
-| `accounts.json` | 多账号池生成（凭证，已 gitignore） |
-| `docs/account-pool.md` | 多账号池与自动注册说明 |
-| `docs/temp-email-backend.md` | 临时邮箱后端（cloudflare_temp_email）集成说明 |
-| `docs/api-contract.md` | 抓包得到的内部 API 契约 |
+
+| 文件                           | 说明                                   |
+| ---------------------------- | ------------------------------------ |
+| `stt.py`                     | CLI 与客户端主程序                          |
+| `audio_split.py`             | 静音检测与切分模块（CLI `--split` 与 Web UI 共用） |
+| `web.py`                     | 本地 Web UI 服务端（标准库）                   |
+| `webui.html`                 | Web UI 单页前端                          |
+| `config.example.toml`        | 配置示例                                 |
+| `requirements.txt`           | 依赖                                   |
+| `session.json`               | `login` 生成（凭证，已 gitignore）           |
+| `accounts.json`              | 多账号池生成（凭证，已 gitignore）               |
+| `docs/account-pool.md`       | 多账号池与自动注册说明                          |
+| `docs/temp-email-backend.md` | 临时邮箱后端（cloudflare_temp_email）集成说明    |
+| `docs/api-contract.md`       | 抓包得到的内部 API 契约                       |
+
 
 ## 自检
 
@@ -255,9 +258,3 @@ python stt.py transcribe interview.m4a --split --skip-silence
 python stt.py selfcheck
 ```
 
-## 致谢
-
-- [cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email) — 多账号自动注册依赖的临时邮箱后端
-- [Playwright](https://playwright.dev) — 一次性登录步骤的浏览器自动化
-- [httpx](https://www.python-httpx.org) — HTTP 客户端
-- [FFmpeg](https://ffmpeg.org) — 可选的音频时长预检（`ffprobe`）
