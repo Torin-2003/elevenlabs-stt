@@ -628,6 +628,12 @@ function modalsHTML(){
                   <div data-act="setProxyStrict" style="${seg2(!!r.strict)}">报错</div>
                 </div></div>
             </div>
+            <div style="display:flex;flex-direction:column;gap:7px">${lbl('路由绕过 (macOS+全局VPN)','route_bypass')}
+              <div style="display:flex;height:40px;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+                <div data-act="setRouteBypassOff" style="${seg2(!r.route_bypass)}">关</div>
+                <div data-act="setRouteBypassOn" style="${seg2(!!r.route_bypass)}">开</div>
+              </div>
+              <div style="font-size:11.5px;color:var(--mut-fg);line-height:1.5">全局 VPN(如 Shadowrocket)下,把代理 IP 经家里网关直连以绕过 VPN。需一次性给 route 配免密 sudo(见 README)。</div></div>
           </div>
           <div style="display:flex;align-items:center;gap:9px;padding:11px 14px;border-radius:6px;background:var(--muted2);border:1px solid var(--border);font-size:12px;color:var(--mut-fg)"><span class="mono" style="color:var(--fg)">pool warm --target ${esc(r.target)}</span> · ${r.strategy==='ui'?'坐标':'Camoufox'} · 将满额账号补至 ${esc(r.target)} 个 · 每个含 10,000 满额度</div>
         </div>`;
@@ -1128,11 +1134,12 @@ document.addEventListener('click',e=>{
     exportSel(){exportAccounts(S.selected.slice());},
     closeImport(){S.importOpen=null;render();},
     openLogin(){S.login={email:'',password:''};S.loginOpen=true;render();}, closeLogin(){if(S.busy!=='login'){S.loginOpen=false;render();}},
-    openReg(){const te=(S.data&&S.data.tempEmail)||{};const rg=(S.data&&S.data.register)||{};const px=(S.data&&S.data.proxy)||{};S.reg={base_url:te.base_url||'',admin_password:te.admin_password||'',site_password:te.site_password||'',domain:te.domain||'',domains:te.domains||[],use_admin_path:te.use_admin_path!==false,poll_interval_secs:te.poll_interval_secs!=null?te.poll_interval_secs:3,poll_timeout_secs:te.poll_timeout_secs!=null?te.poll_timeout_secs:120,target:(S.data&&S.data.pool&&S.data.pool.target)||3,strategy:rg.strategy||'camoufox',headless:!!rg.headless,proxies:(px.proxies||[]).join('\n'),fail_threshold:px.fail_threshold!=null?px.fail_threshold:3,cooldown_secs:px.cooldown_secs!=null?px.cooldown_secs:900,strict:!!px.strict};S.regOpen=true;render();}, closeReg(){if(S.busy!=='register'){S.regOpen=false;S.regProgress=null;render();}},
+    openReg(){const te=(S.data&&S.data.tempEmail)||{};const rg=(S.data&&S.data.register)||{};const px=(S.data&&S.data.proxy)||{};S.reg={base_url:te.base_url||'',admin_password:te.admin_password||'',site_password:te.site_password||'',domain:te.domain||'',domains:te.domains||[],use_admin_path:te.use_admin_path!==false,poll_interval_secs:te.poll_interval_secs!=null?te.poll_interval_secs:3,poll_timeout_secs:te.poll_timeout_secs!=null?te.poll_timeout_secs:120,target:(S.data&&S.data.pool&&S.data.pool.target)||3,strategy:rg.strategy||'camoufox',headless:!!rg.headless,proxies:(px.proxies||[]).join('\n'),fail_threshold:px.fail_threshold!=null?px.fail_threshold:3,cooldown_secs:px.cooldown_secs!=null?px.cooldown_secs:900,strict:!!px.strict,route_bypass:!!px.route_bypass};S.regOpen=true;render();}, closeReg(){if(S.busy!=='register'){S.regOpen=false;S.regProgress=null;render();}},
     setAdminPath(){S.reg.use_admin_path=true;render();}, setApiPath(){S.reg.use_admin_path=false;render();},
     setStratCamoufox(){S.reg.strategy='camoufox';render();}, setStratUi(){S.reg.strategy='ui';render();},
     setHeaded(){S.reg.headless=false;render();}, setHeadless(){S.reg.headless=true;render();},
     setProxyDegrade(){S.reg.strict=false;render();}, setProxyStrict(){S.reg.strict=true;render();},
+    setRouteBypassOff(){S.reg.route_bypass=false;render();}, setRouteBypassOn(){S.reg.route_bypass=true;render();},
     decCount(){S.reg.target=Math.max(1,(+S.reg.target||1)-1);render();}, incCount(){S.reg.target=(+S.reg.target||0)+1;render();},
     doLogin(){runLogin();},
     doRegSave(){runRegSave();},
@@ -1241,7 +1248,7 @@ async function runLogin(){
   S.busy=null; render();
 }
 // 启动注册机 config ↔ config.toml [temp_email]/[accounts].pool_target sync
-function regPayload(){const r=S.reg||{};return {temp_email:{base_url:r.base_url,admin_password:r.admin_password,site_password:r.site_password,domain:r.domain,use_admin_path:!!r.use_admin_path,poll_interval_secs:r.poll_interval_secs,poll_timeout_secs:r.poll_timeout_secs},pool_target:r.target,register:{strategy:r.strategy||'camoufox',headless:!!r.headless},proxy:{proxies:(r.proxies||'').split('\n').map(s=>s.trim()).filter(Boolean),fail_threshold:parseInt(r.fail_threshold)||3,cooldown_secs:parseInt(r.cooldown_secs)||900,strict:!!r.strict}};}
+function regPayload(){const r=S.reg||{};return {temp_email:{base_url:r.base_url,admin_password:r.admin_password,site_password:r.site_password,domain:r.domain,use_admin_path:!!r.use_admin_path,poll_interval_secs:r.poll_interval_secs,poll_timeout_secs:r.poll_timeout_secs},pool_target:r.target,register:{strategy:r.strategy||'camoufox',headless:!!r.headless},proxy:{proxies:(r.proxies||'').split('\n').map(s=>s.trim()).filter(Boolean),fail_threshold:parseInt(r.fail_threshold)||3,cooldown_secs:parseInt(r.cooldown_secs)||900,strict:!!r.strict,route_bypass:!!r.route_bypass}};}
 async function saveRegConfig(){const res=await api('/api/config/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(regPayload())});if(res&&!res.error)S.data=res;return res;}
 async function runRegSave(){const res=await saveRegConfig();toast(res&&res.error?res.error:'配置已保存到 config.toml');render();}
 // 注册进度轮询：注册 POST 阻塞期间每秒拉一次 /api/accounts/register/progress
