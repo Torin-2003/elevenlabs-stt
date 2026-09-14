@@ -246,17 +246,18 @@ class HTTPProtocolStrategy:
             "当前请用 [register] strategy='ui'。")
 
 
-class StealthCDPStrategy:
-    def register(self, **_: Any) -> dict[str, Any]:
-        raise NotImplementedError(
-            "隐身 CDP 策略尚未实现。需引入 nodriver/Patchright/Camoufox。"
-            "当前请用 [register] strategy='ui'。")
+def _make_camoufox():
+    # Lazy import: register_camoufox imports this module, so defer to call time
+    # (and keep camoufox/playwright optional for users on the ui strategy).
+    from register_camoufox import CamoufoxStrategy
+    return CamoufoxStrategy()
 
 
 _STRATEGIES = {
-    "ui": UICoordinateStrategy,
+    "camoufox": _make_camoufox,   # recommended: stealth Firefox + selectors
+    "cdp": _make_camoufox,        # alias — Camoufox is our stealth-CDP realization
+    "ui": UICoordinateStrategy,   # legacy: real Chrome + coordinates (fragile)
     "http": HTTPProtocolStrategy,
-    "cdp": StealthCDPStrategy,
 }
 
 

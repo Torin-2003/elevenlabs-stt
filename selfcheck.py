@@ -522,7 +522,7 @@ def _check_register_dispatch() -> None:
     assert out == {"email": "fake@x", "ok": True}
     assert seen["provider"] is fp and seen["proxy_driver"] is empty_pool, "dispatcher must inject shared services"
 
-    # config-driven dispatch: http/cdp → NotImplementedError stub; unknown → SystemExit
+    # http stub still raises NotImplementedError; unknown strategy → SystemExit.
     orig = stt.register_config
     try:
         stt.register_config = lambda *a, **k: {"strategy": "http"}
@@ -531,12 +531,6 @@ def _check_register_dispatch() -> None:
             assert False, "http stub must raise NotImplementedError"
         except NotImplementedError as e:
             assert "ui" in str(e), "stub should point to strategy='ui'"
-        stt.register_config = lambda *a, **k: {"strategy": "cdp"}
-        try:
-            register.register_one()
-            assert False, "cdp stub must raise NotImplementedError"
-        except NotImplementedError:
-            pass
         stt.register_config = lambda *a, **k: {"strategy": "zzz"}
         try:
             register.register_one()
@@ -545,6 +539,12 @@ def _check_register_dispatch() -> None:
             assert "zzz" in str(e)
     finally:
         stt.register_config = orig
+
+    # camoufox/cdp factories build a CamoufoxStrategy (don't call register() — it
+    # would launch a real browser). Import is browser-dep-free at module load.
+    import register_camoufox
+    assert isinstance(register._STRATEGIES["camoufox"](), register_camoufox.CamoufoxStrategy)
+    assert isinstance(register._STRATEGIES["cdp"](), register_camoufox.CamoufoxStrategy)
 
 
 def _check_register_orchestration() -> None:

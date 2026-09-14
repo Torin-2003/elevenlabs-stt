@@ -147,7 +147,9 @@ def accounts_config(path: pathlib.Path = CONFIG_PATH) -> dict[str, Any]:
 
 
 def register_config(path: pathlib.Path = CONFIG_PATH) -> dict[str, Any]:
-    cfg = {"strategy": "ui"}  # ui (real Chrome) | http | cdp (both extension-point stubs)
+    # strategy: camoufox (stealth Firefox + selectors, recommended) | ui (legacy
+    # real-Chrome coordinates) | http (extension-point stub). headless: camoufox only.
+    cfg = {"strategy": "ui", "headless": False}
     cfg.update(load_toml(path).get("register", {}))
     return cfg
 

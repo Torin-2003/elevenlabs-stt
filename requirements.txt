@@ -1,7 +1,9 @@
 httpx
-# browser helpers only (not needed for single-account transcribe runtime):
-# pip install playwright && playwright install chrome
+# Auto-registration only (not needed for single-account transcribe runtime).
+# camoufox strategy (recommended): pip install camoufox playwright && python -m camoufox fetch
+camoufox
 playwright
+# ui strategy (legacy, real Chrome + coordinates): pyautogui/pyperclip; pygetwindow on Windows
 pyautogui
 pygetwindow
 pyperclip

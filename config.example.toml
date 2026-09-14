@@ -33,7 +33,8 @@ selection_margin = 1.2                   # require remaining >= cost * margin
 auto_refill = true                       # refill pool to target after each transcription
 
 [register]
-strategy = "ui"                          # ui (real Chrome, default) | http | cdp (both not yet implemented)
+strategy = "camoufox"                    # camoufox (stealth Firefox + selectors, recommended; needs `pip install camoufox` + `python -m camoufox fetch`) | ui (legacy real-Chrome coordinates) | http (not implemented)
+headless = false                         # camoufox only; false = visible window (better stealth + watchable)
 
 [proxy]
 # Upstream proxies for the registration flow (Chrome + Firebase/ElevenLabs httpx
