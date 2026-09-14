@@ -86,6 +86,7 @@ const S = {
   loginOpen:false, regOpen:false,
   page:1, pageSize:5, login:null, reg:null, busy:null,   // pagination + login/register flow
   regProgress:null,          // /api/accounts/register/progress payload (注册弹窗日志区)
+  token:'',                  // 用 Google 登录 粘贴导入的 Firebase authUser JSON
   _pageEmails:[], _page:1, _totalPages:1,        // filled by accountsView() for handlers
   // 功能管理 · 长音频切分：files 复用 upload 流,plans 存后端真实切分方案(id→{segments,hard,error})
   tool:{files:[],plans:{},expanded:[],results:[],outPath:'out',chunkSecs:'',
@@ -535,28 +536,47 @@ function statCard(label,val){return `<div style="padding:14px 16px;border:1px so
 
 // ------------------------------------------------------------------ modals
 const SPINNER='<span class="spin" style="width:15px;height:15px;border:2px solid var(--border);border-top-color:var(--fg);border-radius:50%;display:inline-block;animation:spin .7s linear infinite"></span>';
+// monochrome Google "G" — DESIGN.md keeps chromatic color for status only
+const GOOGLE_ICON='<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.48 10.92v3.28h7.84c-.24 1.84-.853 3.187-1.787 4.133-1.147 1.147-2.933 2.4-6.053 2.4-4.827 0-8.6-3.893-8.6-8.72s3.773-8.72 8.6-8.72c2.6 0 4.507 1.027 5.907 2.347l2.307-2.307C18.747 1.44 16.133 0 12.48 0 5.867 0 .307 5.387.307 12s5.56 12 12.173 12c3.573 0 6.267-1.173 8.373-3.36 2.16-2.16 2.84-5.213 2.84-7.667 0-.76-.053-1.467-.173-2.053H12.48z"/></svg>';
 function modalsHTML(){
   let h='';
   if(S.loginOpen){
-    const busy=S.busy==='login', lg=S.login||{};
-    const body=busy
-      ? `<div style="padding:22px;display:flex;align-items:center;gap:11px;font-size:13px;color:var(--mut-fg)">${SPINNER}<span>正在登录 ElevenLabs 并获取令牌…</span></div>`
+    const busy=S.busy==='login', tbusy=S.busy==='tlogin', lg=S.login||{}, snip=googleSnippet();
+    const inStyle="height:40px;padding:0 12px;border-radius:6px;border:1px solid var(--border);background:var(--panel,#fff);color:var(--fg);font-size:13.5px;outline:none";
+    const body=(busy||tbusy)
+      ? `<div style="padding:22px;display:flex;align-items:center;gap:11px;font-size:13px;color:var(--mut-fg)">${SPINNER}<span>${tbusy?'正在导入登录信息并获取额度…':'正在登录 ElevenLabs 并获取令牌…'}</span></div>`
       : `<div style="padding:22px;display:flex;flex-direction:column;gap:16px">
-          <p style="margin:0;font-size:12.5px;color:var(--mut-fg);line-height:1.55">输入你的 ElevenLabs 邮箱与密码,直接登录并把令牌保存到本机账号池(accounts.json),用于后续转录分配。</p>
+          <div style="display:flex;flex-direction:column;gap:9px">
+            <div style="display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600">${GOOGLE_ICON}<span>用 Google 登录（粘贴导入）</span></div>
+            <p style="margin:0;font-size:12px;color:var(--mut-fg);line-height:1.6">Google 禁止在程序控制的浏览器里登录，所以请在<b>你平时的浏览器</b>里用 Google 登录 <span class="mono" style="color:var(--fg)">elevenlabs.io</span>，再把登录信息粘进来。</p>
+            <ol style="margin:0;padding-left:17px;font-size:12px;color:var(--mut-fg);line-height:1.75">
+              <li>在浏览器里用 Google 登录 <span class="mono" style="color:var(--fg)">elevenlabs.io/app/speech-to-text</span></li>
+              <li>按 <span class="mono" style="color:var(--fg)">F12</span> 打开控制台，粘贴下面这行代码回车（首次粘贴需先输入 <span class="mono" style="color:var(--fg)">allow pasting</span> 回车解锁）。<b>控制台回显 <span class="mono" style="color:var(--fg)">undefined</span> 是正常的</b>——登录信息已复制到剪贴板</li>
+              <li>把内容粘到<b>下面这个输入框</b>（<span class="mono" style="color:var(--fg)">Ctrl/⌘+V</span>），再点最下方「导入并保存」</li>
+            </ol>
+            <div style="position:relative">
+              <div class="mono" style="padding:10px 74px 10px 12px;border:1px solid var(--border);border-radius:6px;background:var(--muted2);color:var(--fg);font-size:11.5px;word-break:break-all;line-height:1.5">${esc(snip)}</div>
+              <button data-act="copySnippet" style="position:absolute;top:7px;right:7px;padding:5px 10px;border-radius:5px;border:1px solid var(--border);background:var(--panel,#fff);color:var(--fg);font-size:11.5px;font-weight:500;cursor:pointer">复制代码</button>
+            </div>
+            <textarea data-input="token" rows="3" placeholder='粘贴以 {&quot;apiKey&quot;... 开头的登录信息' style="padding:10px 12px;border-radius:6px;border:1px solid var(--border);background:var(--panel,#fff);color:var(--fg);font-size:12px;outline:none;resize:vertical;line-height:1.5" class="mono">${esc(S.token||'')}</textarea>
+            <button data-act="doTokenLogin" style="height:40px;border-radius:6px;border:none;background:var(--accent);color:var(--accent-fg);font-size:13.5px;font-weight:600;cursor:pointer">导入并保存</button>
+          </div>
+          <div class="mono" style="display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--mut-fg)"><span style="flex:1;height:1px;background:var(--border)"></span>或使用邮箱密码<span style="flex:1;height:1px;background:var(--border)"></span></div>
           <div style="display:flex;flex-direction:column;gap:7px">
             <label style="font-size:13px;font-weight:500">邮箱</label>
-            <input data-input="login.email" value="${esc(lg.email||'')}" placeholder="you@example.com" style="height:40px;padding:0 12px;border-radius:6px;border:1px solid var(--border);background:var(--panel,#fff);color:var(--fg);font-size:13.5px;outline:none" class="mono"/>
+            <input data-input="login.email" value="${esc(lg.email||'')}" placeholder="you@example.com" style="${inStyle}" class="mono"/>
           </div>
           <div style="display:flex;flex-direction:column;gap:7px">
             <label style="font-size:13px;font-weight:500">密码</label>
-            <input data-input="login.password" data-enter="submitLogin" value="${esc(lg.password||'')}" type="password" placeholder="••••••••" style="height:40px;padding:0 12px;border-radius:6px;border:1px solid var(--border);background:var(--panel,#fff);color:var(--fg);font-size:13.5px;outline:none" class="mono"/>
+            <input data-input="login.password" data-enter="submitLogin" value="${esc(lg.password||'')}" type="password" placeholder="••••••••" style="${inStyle}" class="mono"/>
           </div>
+          <button data-act="doLogin" style="height:40px;border-radius:6px;border:1px solid var(--border);background:var(--panel,#fff);color:var(--fg);font-size:13.5px;font-weight:500;cursor:pointer">邮箱密码登录并保存</button>
         </div>`;
-    const foot=busy
-      ? `<button style="padding:9px 18px;border-radius:6px;border:none;background:var(--muted);color:var(--mut-fg);font-size:13.5px;font-weight:600;cursor:default">登录中…</button>`
-      : `<button data-act="closeLogin" style="padding:9px 16px;border-radius:6px;border:1px solid var(--border);background:var(--panel,#fff);color:var(--fg);font-size:13.5px;font-weight:500;cursor:pointer">取消</button><button data-act="doLogin" style="padding:9px 18px;border-radius:6px;border:none;background:var(--accent);color:var(--accent-fg);font-size:13.5px;font-weight:600;cursor:pointer">登录并保存</button>`;
-    h+=`<div data-act="${busy?'stop':'closeLogin'}" style="position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.42);display:flex;align-items:center;justify-content:center;padding:24px;animation:fadein .12s ease"><div data-act="stop" style="width:100%;max-width:440px;background:var(--panel,#fff);border:1px solid var(--border);border-radius:6px;box-shadow:0 24px 64px rgba(0,0,0,.28);overflow:hidden;animation:pop .16s ease">
-      <div style="padding:18px 22px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between"><div style="font-size:15px;font-weight:600">登录账号</div><div data-act="${busy?'stop':'closeLogin'}" style="width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--mut-fg)">✕</div></div>
+    const foot=(busy||tbusy)
+      ? `<button style="padding:9px 18px;border-radius:6px;border:none;background:var(--muted);color:var(--mut-fg);font-size:13.5px;font-weight:600;cursor:default">${tbusy?'导入中…':'登录中…'}</button>`
+      : `<button data-act="closeLogin" style="padding:9px 16px;border-radius:6px;border:1px solid var(--border);background:var(--panel,#fff);color:var(--fg);font-size:13.5px;font-weight:500;cursor:pointer">关闭</button>`;
+    h+=`<div data-act="${busy||tbusy?'stop':'closeLogin'}" style="position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.42);display:flex;align-items:center;justify-content:center;padding:24px;animation:fadein .12s ease"><div data-act="stop" style="width:100%;max-width:460px;max-height:90vh;overflow:auto;background:var(--panel,#fff);border:1px solid var(--border);border-radius:6px;box-shadow:0 24px 64px rgba(0,0,0,.28);animation:pop .16s ease">
+      <div style="padding:18px 22px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between"><div style="font-size:15px;font-weight:600">登录账号</div><div data-act="${busy||tbusy?'stop':'closeLogin'}" style="width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--mut-fg)">✕</div></div>
       ${body}
       <div style="padding:16px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:9px;background:var(--muted2)">${foot}</div>
     </div></div>`;
@@ -1100,11 +1120,13 @@ document.addEventListener('click',e=>{
     refreshSel(){refreshCredits(S.selected.slice());},
     exportSel(){exportAccounts(S.selected.slice());},
     closeImport(){S.importOpen=null;render();},
-    openLogin(){S.login={email:'',password:''};S.loginOpen=true;render();}, closeLogin(){if(S.busy!=='login'){S.loginOpen=false;render();}},
+    openLogin(){S.login={email:'',password:''};S.token='';S.loginOpen=true;render();}, closeLogin(){if(S.busy!=='login'&&S.busy!=='tlogin'){S.loginOpen=false;render();}},
     openReg(){const te=(S.data&&S.data.tempEmail)||{};S.reg={base_url:te.base_url||'',admin_password:te.admin_password||'',site_password:te.site_password||'',domain:te.domain||'',domains:te.domains||[],use_admin_path:te.use_admin_path!==false,poll_interval_secs:te.poll_interval_secs!=null?te.poll_interval_secs:3,poll_timeout_secs:te.poll_timeout_secs!=null?te.poll_timeout_secs:120,target:(S.data&&S.data.pool&&S.data.pool.target)||3};S.regOpen=true;render();}, closeReg(){if(S.busy!=='register'){S.regOpen=false;S.regProgress=null;render();}},
     setAdminPath(){S.reg.use_admin_path=true;render();}, setApiPath(){S.reg.use_admin_path=false;render();},
     decCount(){S.reg.target=Math.max(1,(+S.reg.target||1)-1);render();}, incCount(){S.reg.target=(+S.reg.target||0)+1;render();},
     doLogin(){runLogin();},
+    doTokenLogin(){runTokenLogin();},
+    copySnippet(){const s=googleSnippet();if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(s).then(()=>toast('代码已复制'),()=>toast('复制失败，请手动选择'));}else{toast('复制失败，请手动选择');}},
     doRegSave(){runRegSave();},
     async doReg(){const t=parseInt(String((S.reg&&S.reg.target)||'').replace(/[^0-9]/g,''),10)||0;if(await uiConfirm({title:'确认批量创建账号',lines:[`将通过临时邮箱批量注册,把满额账号补至 ${t} 个。`,'注册所得邮箱与密码将以明文保存在本机 accounts.json。','批量注册可能违反 ElevenLabs 服务条款,请自行评估风险。'],okLabel:'我已知悉,开始创建'}))runRegister();},
     stop(){e.stopPropagation();},
@@ -1120,6 +1142,7 @@ document.addEventListener('input',e=>{
   else if(k==='query'){S.query=el.value;S.selected=[];S.page=1;const pos=el.selectionStart;render();const n=document.querySelector('[data-input="query"]');if(n){n.focus();n.setSelectionRange(pos,pos);}}
   else if(k==='importFile'){if(el.files[0])importAccounts(el.files[0]);el.value='';} // 清空 value,同一文件可重复导入
   else if(k.startsWith('login.')){if(S.login)S.login[k.slice(6)]=el.value;} // no render → keep focus
+  else if(k==='token'){S.token=el.value;} // no render → keep focus in the paste box
   else if(k.startsWith('reg.')){if(S.reg)S.reg[k.slice(4)]=el.value;}   // no render → keep focus
   else if(k==='langQuery'){S.langQuery=el.value;const rows=document.querySelector('[data-lang-rows]');if(rows)rows.innerHTML=langRowsHTML();else render();} // 局部更新选项行,输入框不重建 → 焦点保留、零闪烁;拿不到容器时兜底走全量 render
   else if(k==='keyterm'){S.keyterm=el.value;}
@@ -1208,6 +1231,20 @@ async function runLogin(){
     if(res.error){toast(res.error);}
     else{S.data=res;S.loginOpen=false;toast('已登录并保存账号');}
   }catch(e){toast('登录失败');}
+  S.busy=null; render();
+}
+// 用 Google 登录（粘贴导入）: the console snippet copies the Firebase authUser JSON to the
+// clipboard from the user's own (Google-trusted) browser; we parse+save it on the backend.
+function googleSnippet(){const k=(S.data&&S.data.firebaseUserKey)||'';return 'copy(localStorage.getItem('+JSON.stringify(k)+'))';}
+async function runTokenLogin(){
+  const token=(S.token||'').trim();
+  if(!token){toast('请粘贴登录信息');return;}
+  S.busy='tlogin'; render();
+  try{
+    const res=await api('/api/accounts/login-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});
+    if(res.error){toast(res.error);}
+    else{S.data=res;S.loginOpen=false;S.token='';toast(`已登录并保存 ${res.loggedIn||''}`);}
+  }catch(e){toast('导入失败');}
   S.busy=null; render();
 }
 // 启动注册机 config ↔ config.toml [temp_email]/[accounts].pool_target sync

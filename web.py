@@ -103,6 +103,8 @@ def build_state() -> dict:
         # temp_email/[accounts] config for the 启动注册机 modal (local single-user tool,
         # so exposing the backend secrets to the localhost UI matches accounts.json).
         "tempEmail": stt.temp_email_config(CONFIG_PATH),
+        # localStorage key the Google paste-import snippet reads (Firebase authUser).
+        "firebaseUserKey": stt.FIREBASE_USER_KEY,
     }
 
 
@@ -247,13 +249,36 @@ def do_login(email: str, password: str) -> dict:
     with _LOCK:
         account = stt.account_from_password_signin(email, password)
         account["source"] = "manual"
-        with stt.authed_client(account, save=lambda _s: None) as client:
-            client.get("/v1/user")
-            stt.refresh_credits(account, client)
-        store = stt.load_accounts()
-        stt.upsert_account(store, account)
-        stt.save_accounts(store)
-        return build_state()
+        return _save_signed_in(account)
+
+
+def _save_signed_in(account: dict) -> dict:
+    """Fetch credits for a freshly signed-in account and upsert it into the pool.
+    Caller holds _LOCK."""
+    with stt.authed_client(account, save=lambda _s: None) as client:
+        client.get("/v1/user")
+        stt.refresh_credits(account, client)
+    store = stt.load_accounts()
+    stt.upsert_account(store, account)
+    stt.save_accounts(store)
+    return build_state()
+
+
+def do_token_login(raw: str) -> dict:
+    """Google 登录 (paste import): the user signs into elevenlabs.io with Google in their own
+    normal browser (Google blocks sign-in in automation-controlled browsers, so we can't drive
+    it), copies the Firebase authUser JSON from localStorage, and pastes it here. We parse it,
+    fetch credits, and save the account.
+
+    ponytail: reuses stt.account_from_firebase_user (also used by `stt login`) + _save_signed_in
+    (the same tail as do_login). The pasted JSON is provider-agnostic — the refresh token works
+    for Google or any other sign-in method.
+    """
+    account = stt.account_from_firebase_user(raw)   # raises SystemExit on unusable paste
+    with _LOCK:
+        state = _save_signed_in(account)
+    state["loggedIn"] = account["email"]
+    return state
 
 
 # In-memory register progress, polled by GET /api/accounts/register/progress.
@@ -895,6 +920,16 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     self._send_json(do_login(email, password))
                 except SystemExit as e:      # bad credentials / firebase rejection
+                    self._send_json({"error": str(e)})
+                return
+            if path == "/api/accounts/login-token":
+                raw = (self._read_json().get("token") or "").strip()
+                if not raw:
+                    self._send_json({"error": "请粘贴登录信息"})
+                    return
+                try:
+                    self._send_json(do_token_login(raw))
+                except SystemExit as e:      # unusable paste / token refresh rejected
                     self._send_json({"error": str(e)})
                 return
             if path == "/api/config/save":
