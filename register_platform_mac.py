@@ -80,55 +80,42 @@ class MacDriver:
         return popen
 
     def find_profile_window(self, profile_dir, timeout_s):
-        # Target our exact instance by PID via System Events. `tell application
-        # "Google Chrome"` would address whichever instance macOS registered for
-        # the bundle — the user's daily browser, not our throwaway --user-data-dir
-        # process. A fresh profile opens exactly one window (window 1). Chrome
-        # ignores --window-position/--window-size at launch (it may land on a
-        # secondary monitor at an arbitrary size), so normalize the window onto
-        # the main display (positive origin) at a fixed size via AX, then read
-        # back the real geometry. Requires Accessibility.
-        px, py = self.WINDOW_POSITION
-        sw, sh = self.WINDOW_SIZE
-        script = f'''
-        tell application "System Events"
-            set procs to (every process whose unix id is {self._pid})
-            if procs is {{}} then return ""
-            set p to item 1 of procs
-            if (count of windows of p) is 0 then return ""
-            set w to window 1 of p
-            set position of w to {{{px}, {py}}}
-            set size of w to {{{sw}, {sh}}}
-            set pos to position of w
-            set sz to size of w
-            return ((item 1 of pos) as text) & "," & ((item 2 of pos) as text) & "," & ((item 1 of sz) as text) & "," & ((item 2 of sz) as text)
-        end tell'''
+        # Read the window geometry via Quartz CGWindowList, matching our exact
+        # instance by owner PID. This is read-only and reliable, unlike System
+        # Events AX (which intermittently returned empty window lists via the
+        # `whose unix id is` filter and -10006 on `set position`). Bounds are in
+        # the global display point space — the same space pyautogui clicks in.
+        # The window stays at Chrome's default geometry (a fresh profile is
+        # consistent run-to-run); clicks are computed as fractions of it.
+        from Quartz import (CGWindowListCopyWindowInfo, kCGWindowListOptionOnScreenOnly,
+                            kCGNullWindowID)
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             time.sleep(0.5)
-            try:
-                res = _osascript(script)
-            except (SystemExit, subprocess.TimeoutExpired):
-                res = ""  # window not up yet / Accessibility prompt pending; retry
-            if res:
-                x, y, w, h = (int(v) for v in res.split(","))
-                return MacWindow(left=x, top=y, width=w, height=h, app=self._app)
-        raise SystemExit(
-            "auto-register 未找到临时浏览器窗口（若卡在这里，检查 系统设置→隐私与安全性→"
-            "辅助功能 是否已给终端授权）；aborting")
+            infos = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID) or []
+            for w in infos:
+                if w.get("kCGWindowOwnerPID") != self._pid:
+                    continue
+                if w.get("kCGWindowLayer", 0) != 0:  # 0 = normal window (skip menus/panels)
+                    continue
+                b = w.get("kCGWindowBounds") or {}
+                width, height = int(b.get("Width", 0)), int(b.get("Height", 0))
+                if width >= 400 and height >= 300:
+                    return MacWindow(left=int(b.get("X", 0)), top=int(b.get("Y", 0)),
+                                     width=width, height=height, app=self._app)
+        raise SystemExit("auto-register 未找到临时浏览器窗口（检查浏览器是否正常启动）；aborting")
 
     def ensure_foreground(self, window) -> None:
-        # Raise OUR process by PID (not `tell application by name`, which targets
-        # the daily instance). A user-launched CLI plus this is enough on macOS —
-        # no Windows-style thread-attach dance needed.
+        # Activate OUR instance by PID via AppKit (reliable; not `tell application
+        # by name`, which targets the daily instance). No Windows-style
+        # thread-attach dance needed on macOS.
         if self._pid is None:
             return
-        _osascript(f'''
-        tell application "System Events"
-            set procs to (every process whose unix id is {self._pid})
-            if procs is not {{}} then set frontmost of (item 1 of procs) to true
-        end tell''')
-        time.sleep(0.15)
+        from AppKit import NSRunningApplication
+        app = NSRunningApplication.runningApplicationWithProcessIdentifier_(self._pid)
+        if app is not None:
+            app.activateWithOptions_(1 << 1)  # NSApplicationActivateIgnoringOtherApps
+        time.sleep(0.2)
 
     def kill_profile(self, profile_dir, popen) -> None:
         if popen is not None:
