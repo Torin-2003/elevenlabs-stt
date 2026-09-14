@@ -162,6 +162,12 @@ class CamoufoxStrategy:
                 stt._rlog(f"代理出口 IP: {exit_ip}")
 
         launch: dict[str, Any] = {"headless": headless}
+        # Randomize the OS fingerprint per registration so accounts sharing the
+        # static-IP pool still look like distinct devices — UA/platform/screen/
+        # hardwareConcurrency all vary per launch (verified). Camoufox keeps each
+        # generated fingerprint internally consistent; without this the default
+        # pins one OS profile and successive launches look near-identical.
+        launch["os"] = ["windows", "macos", "linux"]
         cam_proxy = _camoufox_proxy(proxy_url)
         if cam_proxy:
             launch["proxy"] = cam_proxy
