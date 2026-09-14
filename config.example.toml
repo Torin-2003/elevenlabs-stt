@@ -34,7 +34,8 @@ auto_refill = true                       # refill pool to target after each tran
 
 [register]
 strategy = "camoufox"                    # camoufox (stealth Firefox + selectors, recommended; needs `pip install camoufox` + `python -m camoufox fetch`) | ui (legacy real-Chrome coordinates) | http (not implemented)
-headless = false                         # camoufox only; false = visible window (better stealth + watchable)
+headless = true                          # camoufox only; true = no window, silent background (NopeCHA solves headless fine — validated); false = visible window to watch
+captcha_addons = ["nopecha"]             # free in-browser hCaptcha solver (Firefox addon, auto-downloaded on first use). ElevenLabs signup shows a VISIBLE hCaptcha even on clean IPs, so a solver is required. NopeCHA free tier = 100 solves/day, no key — but only serves residential/ISP IPs (works on Decodo static-ISP; refuses datacenter). [] = no solver.
 
 [proxy]
 # Upstream proxies for the registration flow (Chrome + Firebase/ElevenLabs httpx
@@ -46,6 +47,14 @@ headless = false                         # camoufox only; false = visible window
 # registration keeps one IP, each account rotates. No placeholder = per-request
 # rotation / static. A rotating residential gateway needs only ONE entry here.
 # proxies = ["http://user-session-{session}:pass@gate.example.com:7000"]
+#
+# Static ISP / datacenter pools are a FIXED list of IPs — one line per endpoint
+# (no {session}); the pool round-robins across them, one exit IP per account.
+# e.g. Decodo static ISP (10 ports = 10 sticky IPs on one host):
+# proxies = [
+#   "http://user:pass@isp.example.com:10001",
+#   "http://user:pass@isp.example.com:10002",
+# ]
 #
 # The ui strategy drives real Chrome, whose --proxy-server does NOT accept inline
 # user:pass credentials (auth dialog the automation can't dismiss) — use
@@ -61,7 +70,11 @@ strict = false                           # true: error when all disabled; false:
 route_bypass = false
 
 [captcha]
-# Only used by the http/cdp strategies (not implemented yet); the ui strategy
-# gets hCaptcha's invisible pass and needs no solver.
+# For a future browserless `http` strategy (not implemented). NOTE: the camoufox
+# strategy does NOT get a reliable invisible pass — ElevenLabs shows a visible
+# hCaptcha even on clean IPs — so use [register].captcha_addons=["nopecha"]
+# (free, in-browser). A paid token API below would only be needed for true
+# no-browser protocol registration (the signup POST carries the hCaptcha token
+# as pre-sign-up's `recaptcha_token`).
 provider = ""                            # ezcaptcha | 2captcha | yescaptcha
 api_key = ""
