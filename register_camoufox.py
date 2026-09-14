@@ -28,6 +28,16 @@ PASSWORD_SEL = 'input[name="password"]'
 TERMS_SEL = 'button[role="checkbox"]'
 
 
+def _geoip_available() -> bool:
+    """camoufox[geoip] present? (aligns browser timezone/locale to the proxy exit)."""
+    try:
+        from camoufox.geolocation import geoip_allowed
+        geoip_allowed()
+        return True
+    except Exception:
+        return False
+
+
 def _camoufox_proxy(url: str | None) -> dict[str, str] | None:
     """Playwright/Camoufox proxy dict; supports user:pass (Chrome flags don't)."""
     if not url:
@@ -74,7 +84,8 @@ class CamoufoxStrategy:
         cam_proxy = _camoufox_proxy(proxy_url)
         if cam_proxy:
             launch["proxy"] = cam_proxy
-            launch["geoip"] = True  # align timezone/locale to the proxy exit
+            if _geoip_available():
+                launch["geoip"] = True  # align timezone/locale to the proxy exit
 
         try:
             stt._rlog("创建临时邮箱...")

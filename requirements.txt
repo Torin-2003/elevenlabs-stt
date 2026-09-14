@@ -1,7 +1,7 @@
 httpx
 # Auto-registration only (not needed for single-account transcribe runtime).
 # camoufox strategy (recommended): pip install camoufox playwright && python -m camoufox fetch
-camoufox
+camoufox[geoip]
 playwright
 # ui strategy (legacy, real Chrome + coordinates): pyautogui/pyperclip; pygetwindow on Windows
 pyautogui
