@@ -343,39 +343,34 @@ def do_register(target: int | None) -> dict:
             except Exception as e:
                 _reg_log(f"route 预热失败（继续）: {e}")
 
-        if workers <= 1:
-            proxy_driver = proxy.ProxyDriver(pcfg)  # one driver → cursor rotates the pool
-            while fresh < tgt:
-                _reg_log(f"账号池 {fresh}/{tgt}，开始注册第 {_REG_PROGRESS['done'] + 1} 个账号")
-                account = register.register_one(proxy_driver=proxy_driver)
-                with _LOCK:
-                    stt.persist_registered(store, account)
-                _REG_PROGRESS["done"] += 1
-                fresh = stt.fresh_count(store, acfg["fresh_threshold"])
+        _reg_log(f"{'并行' if workers > 1 else '串行'}注册：{workers} 并发 / {len(proxies)} 个 IP")
+        # One fault-tolerant loop for every concurrency: submit the shortfall,
+        # skip individual failures, and retry (bounded) until the pool hits target.
+        attempts, guard, pidx = 0, max(3, (tgt - fresh) * 3), 0
+        while fresh < tgt and attempts < guard:
+            need = tgt - fresh
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = []
+                for _ in range(need):
+                    purl = proxies[pidx % len(proxies)] if proxies else None
+                    pidx += 1
+                    attempts += 1
+                    futs.append(ex.submit(_register_worker, pcfg, purl))
+                for fut in as_completed(futs):
+                    try:
+                        account = fut.result()
+                    except (Exception, SystemExit) as e:
+                        _reg_log(f"跳过一个失败账号: {e}")
+                        continue
+                    with _LOCK:
+                        stt.persist_registered(store, account)
+                        _REG_PROGRESS["done"] += 1
+                    _reg_log(f"注册成功: {account.get('email')}（{stt.cached_remaining(account)} 积分）")
+            fresh = stt.fresh_count(store, acfg["fresh_threshold"])
+        if fresh < tgt:
+            _reg_log(f"注册结束（未满：多次失败后停止）：账号池 {fresh}/{tgt}")
         else:
-            _reg_log(f"并行注册：{workers} 并发 / {len(proxies)} 个 IP")
-            attempts, guard, pidx = 0, max(3, (tgt - fresh) * 3), 0
-            while fresh < tgt and attempts < guard:
-                need = tgt - fresh
-                with ThreadPoolExecutor(max_workers=workers) as ex:
-                    futs = []
-                    for _ in range(need):
-                        purl = proxies[pidx % len(proxies)] if proxies else None
-                        pidx += 1
-                        attempts += 1
-                        futs.append(ex.submit(_register_worker, pcfg, purl))
-                    for fut in as_completed(futs):
-                        try:
-                            account = fut.result()
-                        except (Exception, SystemExit) as e:
-                            _reg_log(f"跳过一个失败账号: {e}")
-                            continue
-                        with _LOCK:
-                            stt.persist_registered(store, account)
-                            _REG_PROGRESS["done"] += 1
-                        _reg_log(f"注册成功: {account.get('email')}（{stt.cached_remaining(account)} 积分）")
-                fresh = stt.fresh_count(store, acfg["fresh_threshold"])
-        _reg_log(f"注册结束：账号池 {fresh}/{tgt}")
+            _reg_log(f"注册结束：账号池 {fresh}/{tgt}")
         return build_state()
     except (Exception, SystemExit) as e:
         msg = f"注册失败: {e}" if isinstance(e, SystemExit) else f"注册失败: {e!r}"
