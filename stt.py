@@ -463,6 +463,49 @@ def firebase_signin_password(email: str, password: str, proxy: str | None = None
     return r.json()
 
 
+def firebase_apply_oob(oob_code: str, proxy: str | None = None) -> dict[str, Any]:
+    """Apply a Firebase email-verification oobCode (from the verification link).
+
+    Verifies the email server-side without driving the browser to the action page
+    (the ElevenLabs SPA action route never reaches networkidle and is flaky).
+    """
+    url = f"{IDENTITY_URL}:update?key={FIREBASE_API_KEY}"
+    body = {"oobCode": oob_code}
+    headers = {"Referer": FIREBASE_REFERER}
+    if proxy:
+        with httpx.Client(proxy=proxy, timeout=30) as client:
+            r = client.post(url, json=body, headers=headers)
+    else:
+        r = httpx.post(url, json=body, headers=headers, timeout=30)
+    if r.status_code >= 400:
+        raise SystemExit(f"email verification (oobCode) failed ({r.status_code}): {r.text[:300]}")
+    return r.json()
+
+
+def elevenlabs_prepare_internal_verification(email: str, verification_code: str,
+                                             proxy: str | None = None) -> dict[str, Any]:
+    """Clear ElevenLabs' internal email-verification block.
+
+    ElevenLabs' Firebase sign-in blocking function tracks verification separately
+    from Firebase's `emailVerified`; sign-in fails "email has not been verified"
+    until this is called with the `internalCode` from the verification link (as
+    field `verification_code`). Anonymous — no bearer token. Call after applying
+    the Firebase oobCode and before signInWithPassword.
+    """
+    url = f"{API_BASE}/v1/user/prepare-internal-verification"
+    body = {"email": email, "verification_code": verification_code}
+    headers = {"Origin": "https://elevenlabs.io", "Referer": FIREBASE_REFERER,
+               "Content-Type": "application/json"}
+    if proxy:
+        with httpx.Client(proxy=proxy, timeout=30) as client:
+            r = client.post(url, json=body, headers=headers)
+    else:
+        r = httpx.post(url, json=body, headers=headers, timeout=30)
+    if r.status_code >= 400:
+        raise SystemExit(f"prepare-internal-verification failed ({r.status_code}): {r.text[:300]}")
+    return r.json()
+
+
 def account_from_password_signin(email: str, password: str, temp_address: str | None = None,
                                  proxy: str | None = None) -> dict[str, Any]:
     data = firebase_signin_password(email, password, proxy=proxy)

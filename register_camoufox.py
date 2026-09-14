@@ -12,8 +12,9 @@ First run needs the browser: `python -m camoufox fetch`.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 import stt
 from register import (EmailProvider, VERIFY_LINK_PATTERN, CloudflareTempEmail,
@@ -76,7 +77,9 @@ class CamoufoxStrategy:
             stt._rlog("启动 Camoufox 并打开注册页...")
             with Camoufox(**launch) as browser:
                 page = browser.new_page()
-                page.goto(SIGNUP_URL, wait_until="networkidle", timeout=60000)
+                # domcontentloaded (not networkidle — this SPA never idles); the
+                # selector wait is the real readiness signal.
+                page.goto(SIGNUP_URL, wait_until="domcontentloaded", timeout=60000)
                 page.wait_for_selector(EMAIL_SEL, timeout=30000)
                 stt._rlog("填写注册表单...")
                 page.fill(EMAIL_SEL, email)
@@ -87,13 +90,37 @@ class CamoufoxStrategy:
                 stt._rlog(f"等待验证邮件（最长 {tcfg['poll_timeout_secs']}s）...")
                 link = provider.poll_verification_link(
                     addr, VERIFY_LINK_PATTERN, tcfg["poll_timeout_secs"], tcfg["poll_interval_secs"])
-                stt._rlog("打开验证链接确认邮箱...")
-                page.goto(link, wait_until="networkidle", timeout=60000)
-                page.wait_for_timeout(4000)  # let the confirmation settle
+
+            # Browser's job ends at submit (account created + email sent). Confirm
+            # the email by applying the oobCode via Firebase REST — the ElevenLabs
+            # SPA action route never reaches networkidle and is flaky to drive.
+            stt._rlog("确认邮箱...")
+            q = parse_qs(urlparse(link).query)
+            oob = q.get("oobCode", [None])[0]
+            internal = q.get("internalCode", [None])[0]
+            if not oob:
+                raise SystemExit(f"无法从验证链接解析 oobCode: {link[:120]}")
+            stt.firebase_apply_oob(oob, proxy=proxy_url)  # Firebase emailVerified=true
+            if internal:
+                # clear ElevenLabs' internal verification block (else sign-in 400s)
+                stt.elevenlabs_prepare_internal_verification(email, internal, proxy=proxy_url)
 
             stt._rlog("用新账号登录并拉取积分...")
-            account = stt.account_from_password_signin(
-                email, password, temp_address=email, proxy=proxy_url)
+            # Verification can take a beat to propagate to the sign-in blocking
+            # function ("sign in once more"); retry a few times.
+            account = None
+            last_err: BaseException | None = None
+            for attempt in range(4):
+                try:
+                    account = stt.account_from_password_signin(
+                        email, password, temp_address=email, proxy=proxy_url)
+                    break
+                except SystemExit as e:
+                    last_err = e
+                    stt._rlog(f"登录未就绪，重试 ({attempt + 1}/4)...")
+                    time.sleep(6)
+            if account is None:
+                raise last_err  # type: ignore[misc]
             with stt.authed_client(account, save=lambda _s: None, proxy=proxy_url) as client:
                 client.get("/v1/user")
                 stt.refresh_credits(account, client)
