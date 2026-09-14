@@ -149,7 +149,9 @@ def accounts_config(path: pathlib.Path = CONFIG_PATH) -> dict[str, Any]:
 def register_config(path: pathlib.Path = CONFIG_PATH) -> dict[str, Any]:
     # strategy: camoufox (stealth Firefox + selectors, recommended) | ui (legacy
     # real-Chrome coordinates) | http (extension-point stub). headless: camoufox only.
-    cfg = {"strategy": "ui", "headless": False}
+    # captcha_addons: Firefox addons to load in Camoufox to auto-solve a visible
+    # hCaptcha (e.g. ["nopecha"]); empty = rely on the invisible pass only.
+    cfg = {"strategy": "ui", "headless": False, "captcha_addons": []}
     cfg.update(load_toml(path).get("register", {}))
     return cfg
 

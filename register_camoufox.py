@@ -124,6 +124,17 @@ class CamoufoxStrategy:
             if _geoip_available():
                 launch["geoip"] = True  # align timezone/locale to the proxy exit
 
+        # captcha solver addon(s) for when the invisible pass fails (visible
+        # hCaptcha challenge) — e.g. ["nopecha"]. Loaded into the Firefox profile.
+        addon_names = rcfg.get("captcha_addons") or []
+        if addon_names:
+            try:
+                import captcha_addon
+                launch["addons"] = captcha_addon.resolve_addons(addon_names)
+                stt._rlog(f"已加载验证码解题插件: {', '.join(addon_names)}")
+            except Exception as e:  # never block a run on addon setup
+                stt._rlog(f"验证码插件加载失败（继续，不用插件）: {e}")
+
         try:
             stt._rlog("创建临时邮箱...")
             addr = provider.create_address()

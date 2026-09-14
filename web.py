@@ -371,6 +371,9 @@ def do_save_config(temp_email: dict, pool_target, register: dict | None = None,
                 reg["strategy"] = str(register["strategy"])
             if "headless" in register:
                 reg["headless"] = bool(register["headless"])
+            if "captcha_addons" in register:
+                reg["captcha_addons"] = [str(x).strip() for x in
+                                         (register["captcha_addons"] or []) if str(x).strip()]
             data["register"] = reg
         if proxy:
             px = dict(data.get("proxy", {}) or {})

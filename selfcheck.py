@@ -357,6 +357,7 @@ def run() -> int:
     _check_do_save_config_route_bypass()
     _check_used_exit_ips()
     _check_exit_ip_dedup_reroll()
+    _check_captcha_addon()
 
     print("selfcheck ok")
     return 0
@@ -822,6 +823,38 @@ def _check_exit_ip_dedup_reroll() -> None:
         "http://u-session-{session}:p@g:7000", {"9.9.9.9"},
         lambda b: (built3.append(b), rc._proxy.with_session(b))[1], lambda _u: None)
     assert ip3 is None and len(built3) == 1, "probe failure must not loop"
+
+
+def _check_captcha_addon() -> None:
+    import json
+    import captcha_addon
+    # an already-extracted addon dir is returned as-is (no network)
+    d = pathlib.Path(tempfile.mkdtemp(prefix="stt-addon-"))
+    (d / "manifest.json").write_text(json.dumps({"name": "x", "version": "1"}))
+    try:
+        assert captcha_addon.resolve_addon(str(d)) == str(d)
+        assert captcha_addon.resolve_addons([str(d), "  "]) == [str(d)], "blanks skipped"
+        try:
+            captcha_addon.resolve_addon("definitely-not-a-solver")
+            assert False, "unknown addon name must raise"
+        except SystemExit:
+            pass
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+    # do_save_config persists [register].captcha_addons
+    import web
+    saved_cfg, saved_bs = web.CONFIG_PATH, web.build_state
+    tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="stt-cfg2-"))
+    web.CONFIG_PATH = tmpdir / "config.toml"
+    web.build_state = lambda: {}
+    try:
+        web.do_save_config({}, None, register={"strategy": "camoufox", "captcha_addons": ["nopecha", "  "]})
+        rc = stt.register_config(web.CONFIG_PATH)
+        assert rc["captcha_addons"] == ["nopecha"], rc.get("captcha_addons")
+    finally:
+        web.CONFIG_PATH, web.build_state = saved_cfg, saved_bs
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 if __name__ == "__main__":
