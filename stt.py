@@ -155,7 +155,10 @@ def register_config(path: pathlib.Path = CONFIG_PATH) -> dict[str, Any]:
 
 
 def proxy_config(path: pathlib.Path = CONFIG_PATH) -> dict[str, Any]:
-    cfg = {"proxies": [], "fail_threshold": 3, "cooldown_secs": 900, "strict": False}
+    # route_bypass (macOS): route the proxy's real IP via the physical gateway so
+    # it works under a global VPN (Shadowrocket) — needs passwordless sudo for route.
+    cfg = {"proxies": [], "fail_threshold": 3, "cooldown_secs": 900, "strict": False,
+           "route_bypass": False}
     cfg.update(load_toml(path).get("proxy", {}))
     return cfg
 

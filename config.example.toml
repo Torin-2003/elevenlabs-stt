@@ -55,6 +55,10 @@ proxies = []
 fail_threshold = 3                       # disable a proxy after this many consecutive failures
 cooldown_secs = 900                      # re-admit a disabled proxy after this long (15 min)
 strict = false                           # true: error when all disabled; false: fall back to direct
+# macOS + global VPN (e.g. Shadowrocket): route the proxy's real IP via the
+# physical home gateway so it's reachable without touching the VPN. Needs a
+# one-time passwordless-sudo rule for `route` (see README). Off by default.
+route_bypass = false
 
 [captcha]
 # Only used by the http/cdp strategies (not implemented yet); the ui strategy

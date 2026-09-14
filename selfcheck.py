@@ -359,6 +359,11 @@ def run() -> int:
 
 def _check_proxy_driver() -> None:
     now = time.time()
+    # route-bypass: swap hostname for a real IP, preserving auth/scheme/port
+    import proxy_route
+    assert proxy_route.ip_url("http://user:pass@gate.decodo.com:7000", "9.9.9.9") == "http://user:pass@9.9.9.9:7000"
+    assert proxy_route.ip_url("socks5://h.example:1080", "9.9.9.9") == "socks5://9.9.9.9:1080"
+
     # sticky-session substitution: {session} → fresh id per call; else unchanged
     assert proxy.with_session(None) is None
     assert proxy.with_session("http://u:p@g:1") == "http://u:p@g:1"

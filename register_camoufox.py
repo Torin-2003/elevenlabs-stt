@@ -63,6 +63,13 @@ class CamoufoxStrategy:
         # one sticky IP for this whole registration (browser + API calls)
         proxy_url = _proxy.with_session(picked.url) if picked else None
 
+        # route-bypass: under a global VPN (Shadowrocket), route the proxy's real
+        # IP via the physical gateway so it's reachable (see proxy_route).
+        routed_ip = None
+        if proxy_url and stt.proxy_config().get("route_bypass"):
+            import proxy_route
+            proxy_url, routed_ip = proxy_route.prepare(proxy_url)
+
         launch: dict[str, Any] = {"headless": headless}
         cam_proxy = _camoufox_proxy(proxy_url)
         if cam_proxy:
@@ -134,3 +141,7 @@ class CamoufoxStrategy:
             if picked:
                 proxy_driver.mark_fail(picked)
             raise
+        finally:
+            if routed_ip:
+                import proxy_route
+                proxy_route.cleanup(routed_ip)
