@@ -602,7 +602,34 @@ function modalsHTML(){
             <div style="display:flex;flex-direction:column;gap:7px;min-width:0"><label style="font-size:13px;font-weight:500;white-space:nowrap">轮询间隔 (秒)</label>${regIn('poll_interval_secs','3')}</div>
             <div style="display:flex;flex-direction:column;gap:7px;min-width:0"><label style="font-size:13px;font-weight:500;white-space:nowrap">轮询超时 (秒)</label>${regIn('poll_timeout_secs','120')}</div>
           </div>
-          <div style="display:flex;align-items:center;gap:9px;padding:11px 14px;border-radius:6px;background:var(--muted2);border:1px solid var(--border);font-size:12px;color:var(--mut-fg)"><span class="mono" style="color:var(--fg)">pool warm --target ${esc(r.target)}</span> · 将满额账号补至 ${esc(r.target)} 个 · 每个含 10,000 满额度</div>
+          <div style="border-top:1px solid var(--border);margin-top:3px;padding-top:15px;display:flex;flex-direction:column;gap:15px">
+            <p style="margin:0;font-size:12.5px;line-height:1.55;color:var(--mut-fg)">对应 <span class="mono" style="color:var(--fg)">config.toml → [register]/[proxy]</span>。注册策略与代理池。</p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+              <div style="display:flex;flex-direction:column;gap:7px">${lbl('注册策略','strategy')}
+                <div style="display:flex;height:40px;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+                  <div data-act="setStratCamoufox" style="${seg2(r.strategy!=='ui')}">Camoufox 隐身</div>
+                  <div data-act="setStratUi" style="${seg2(r.strategy==='ui')}">坐标(旧)</div>
+                </div></div>
+              <div style="display:flex;flex-direction:column;gap:7px">${lbl('浏览器窗口','headless')}
+                <div style="display:flex;height:40px;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+                  <div data-act="setHeaded" style="${seg2(!r.headless)}">可见</div>
+                  <div data-act="setHeadless" style="${seg2(!!r.headless)}">无头</div>
+                </div></div>
+            </div>
+            <div style="font-size:11.5px;color:var(--mut-fg);line-height:1.5">Camoufox 自动生成隐身指纹(无需手工配置),用住宅代理时按出口 geoip 对齐时区/语言。坐标策略仅 Windows 且较脆,建议 Camoufox。</div>
+            <div style="display:flex;flex-direction:column;gap:7px">${lbl('代理池 (每行一个,须住宅IP)','proxies')}
+              <textarea data-input="reg.proxies" placeholder="http://user:pass@host:port&#10;socks5://host:port&#10;留空 = 直连" style="width:100%;box-sizing:border-box;height:74px;padding:9px 12px;border-radius:6px;border:1px solid var(--border);background:var(--panel,#fff);color:var(--fg);font-size:12.5px;line-height:1.5;outline:none;resize:vertical" class="mono">${esc(r.proxies||'')}</textarea></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px">
+              <div style="display:flex;flex-direction:column;gap:7px;min-width:0"><label style="font-size:13px;font-weight:500;white-space:nowrap">失败禁用阈值</label>${regIn('fail_threshold','3')}</div>
+              <div style="display:flex;flex-direction:column;gap:7px;min-width:0"><label style="font-size:13px;font-weight:500;white-space:nowrap">冷却 (秒)</label>${regIn('cooldown_secs','900')}</div>
+              <div style="display:flex;flex-direction:column;gap:7px;min-width:0"><label style="font-size:13px;font-weight:500;white-space:nowrap">全禁用时</label>
+                <div style="display:flex;height:40px;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+                  <div data-act="setProxyDegrade" style="${seg2(!r.strict)}">降级直连</div>
+                  <div data-act="setProxyStrict" style="${seg2(!!r.strict)}">报错</div>
+                </div></div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:9px;padding:11px 14px;border-radius:6px;background:var(--muted2);border:1px solid var(--border);font-size:12px;color:var(--mut-fg)"><span class="mono" style="color:var(--fg)">pool warm --target ${esc(r.target)}</span> · ${r.strategy==='ui'?'坐标':'Camoufox'} · 将满额账号补至 ${esc(r.target)} 个 · 每个含 10,000 满额度</div>
         </div>`;
     const foot=busy
       ? `<button style="padding:9px 18px;border-radius:6px;border:none;background:var(--muted);color:var(--mut-fg);font-size:13.5px;font-weight:600;cursor:default">创建中…</button>`
@@ -1101,8 +1128,11 @@ document.addEventListener('click',e=>{
     exportSel(){exportAccounts(S.selected.slice());},
     closeImport(){S.importOpen=null;render();},
     openLogin(){S.login={email:'',password:''};S.loginOpen=true;render();}, closeLogin(){if(S.busy!=='login'){S.loginOpen=false;render();}},
-    openReg(){const te=(S.data&&S.data.tempEmail)||{};S.reg={base_url:te.base_url||'',admin_password:te.admin_password||'',site_password:te.site_password||'',domain:te.domain||'',domains:te.domains||[],use_admin_path:te.use_admin_path!==false,poll_interval_secs:te.poll_interval_secs!=null?te.poll_interval_secs:3,poll_timeout_secs:te.poll_timeout_secs!=null?te.poll_timeout_secs:120,target:(S.data&&S.data.pool&&S.data.pool.target)||3};S.regOpen=true;render();}, closeReg(){if(S.busy!=='register'){S.regOpen=false;S.regProgress=null;render();}},
+    openReg(){const te=(S.data&&S.data.tempEmail)||{};const rg=(S.data&&S.data.register)||{};const px=(S.data&&S.data.proxy)||{};S.reg={base_url:te.base_url||'',admin_password:te.admin_password||'',site_password:te.site_password||'',domain:te.domain||'',domains:te.domains||[],use_admin_path:te.use_admin_path!==false,poll_interval_secs:te.poll_interval_secs!=null?te.poll_interval_secs:3,poll_timeout_secs:te.poll_timeout_secs!=null?te.poll_timeout_secs:120,target:(S.data&&S.data.pool&&S.data.pool.target)||3,strategy:rg.strategy||'camoufox',headless:!!rg.headless,proxies:(px.proxies||[]).join('\n'),fail_threshold:px.fail_threshold!=null?px.fail_threshold:3,cooldown_secs:px.cooldown_secs!=null?px.cooldown_secs:900,strict:!!px.strict};S.regOpen=true;render();}, closeReg(){if(S.busy!=='register'){S.regOpen=false;S.regProgress=null;render();}},
     setAdminPath(){S.reg.use_admin_path=true;render();}, setApiPath(){S.reg.use_admin_path=false;render();},
+    setStratCamoufox(){S.reg.strategy='camoufox';render();}, setStratUi(){S.reg.strategy='ui';render();},
+    setHeaded(){S.reg.headless=false;render();}, setHeadless(){S.reg.headless=true;render();},
+    setProxyDegrade(){S.reg.strict=false;render();}, setProxyStrict(){S.reg.strict=true;render();},
     decCount(){S.reg.target=Math.max(1,(+S.reg.target||1)-1);render();}, incCount(){S.reg.target=(+S.reg.target||0)+1;render();},
     doLogin(){runLogin();},
     doRegSave(){runRegSave();},
@@ -1211,7 +1241,7 @@ async function runLogin(){
   S.busy=null; render();
 }
 // 启动注册机 config ↔ config.toml [temp_email]/[accounts].pool_target sync
-function regPayload(){const r=S.reg||{};return {temp_email:{base_url:r.base_url,admin_password:r.admin_password,site_password:r.site_password,domain:r.domain,use_admin_path:!!r.use_admin_path,poll_interval_secs:r.poll_interval_secs,poll_timeout_secs:r.poll_timeout_secs},pool_target:r.target};}
+function regPayload(){const r=S.reg||{};return {temp_email:{base_url:r.base_url,admin_password:r.admin_password,site_password:r.site_password,domain:r.domain,use_admin_path:!!r.use_admin_path,poll_interval_secs:r.poll_interval_secs,poll_timeout_secs:r.poll_timeout_secs},pool_target:r.target,register:{strategy:r.strategy||'camoufox',headless:!!r.headless},proxy:{proxies:(r.proxies||'').split('\n').map(s=>s.trim()).filter(Boolean),fail_threshold:parseInt(r.fail_threshold)||3,cooldown_secs:parseInt(r.cooldown_secs)||900,strict:!!r.strict}};}
 async function saveRegConfig(){const res=await api('/api/config/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(regPayload())});if(res&&!res.error)S.data=res;return res;}
 async function runRegSave(){const res=await saveRegConfig();toast(res&&res.error?res.error:'配置已保存到 config.toml');render();}
 // 注册进度轮询：注册 POST 阻塞期间每秒拉一次 /api/accounts/register/progress

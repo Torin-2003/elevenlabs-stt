@@ -103,6 +103,8 @@ def build_state() -> dict:
         # temp_email/[accounts] config for the 启动注册机 modal (local single-user tool,
         # so exposing the backend secrets to the localhost UI matches accounts.json).
         "tempEmail": stt.temp_email_config(CONFIG_PATH),
+        "register": stt.register_config(CONFIG_PATH),   # strategy + headless
+        "proxy": stt.proxy_config(CONFIG_PATH),         # residential proxy pool
     }
 
 
@@ -332,9 +334,11 @@ def _dump_toml(data: dict) -> str:
     return "\n".join(out)
 
 
-def do_save_config(temp_email: dict, pool_target) -> dict:
-    """Persist the 启动注册机 params into config.toml [temp_email] + [accounts].pool_target,
-    preserving every other section/key. Keeps config.toml and the UI in sync."""
+def do_save_config(temp_email: dict, pool_target, register: dict | None = None,
+                   proxy: dict | None = None) -> dict:
+    """Persist the 启动注册机 params into config.toml [temp_email] + [accounts].pool_target
+    (+ [register] and [proxy] when provided), preserving every other section/key.
+    Keeps config.toml and the UI in sync."""
     with _LOCK:
         data = stt.load_toml(CONFIG_PATH)                 # full existing config (or {})
         te = dict(stt.TEMP_EMAIL_DEFAULTS)
@@ -361,6 +365,24 @@ def do_save_config(temp_email: dict, pool_target) -> dict:
             acc = dict(data.get("accounts", {}))
             acc["pool_target"] = int(pool_target)
             data["accounts"] = acc
+        if register:
+            reg = dict(data.get("register", {}) or {})
+            if "strategy" in register:
+                reg["strategy"] = str(register["strategy"])
+            if "headless" in register:
+                reg["headless"] = bool(register["headless"])
+            data["register"] = reg
+        if proxy:
+            px = dict(data.get("proxy", {}) or {})
+            if "proxies" in proxy:
+                px["proxies"] = [str(x).strip() for x in (proxy["proxies"] or []) if str(x).strip()]
+            if "fail_threshold" in proxy:
+                px["fail_threshold"] = int(proxy["fail_threshold"] or 3)
+            if "cooldown_secs" in proxy:
+                px["cooldown_secs"] = int(proxy["cooldown_secs"] or 900)
+            if "strict" in proxy:
+                px["strict"] = bool(proxy["strict"])
+            data["proxy"] = px
         CONFIG_PATH.write_text(_dump_toml(data), encoding="utf-8")
     return build_state()
 
@@ -900,7 +922,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/config/save":
                 body = self._read_json()
                 self._send_json(do_save_config(body.get("temp_email", {}),
-                                               body.get("pool_target")))
+                                               body.get("pool_target"),
+                                               body.get("register"),
+                                               body.get("proxy")))
                 return
             if path == "/api/accounts/register":
                 target = self._read_json().get("target")
