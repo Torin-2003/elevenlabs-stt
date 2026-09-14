@@ -40,6 +40,22 @@ def _geoip_available() -> bool:
         return False
 
 
+def _bandwidth_prefs() -> dict[str, Any]:
+    """Firefox prefs that cut metered proxy bandwidth WITHOUT request interception.
+    page.route interception breaks the hCaptcha/NopeCHA flow (verified live: the
+    challenge stalls and NopeCHA never solves, even on a known-good IP), so we tune
+    prefs instead: skip web-font downloads and autoplay media. Images can't be
+    host-filtered via prefs, so they're left alone — hCaptcha's challenge images
+    must load for NopeCHA to classify them."""
+    return {
+        "gfx.downloadable_fonts.enabled": False,   # don't fetch web fonts (use local)
+        "browser.display.use_document_fonts": 0,   # ignore document-specified fonts
+        "media.autoplay.default": 5,               # block autoplay → media not fetched
+        "media.autoplay.blocking_policy": 2,
+        "image.animation_mode": "none",            # don't loop animated images
+    }
+
+
 def _attach_capture(page, path: str) -> None:
     """Append the signup/captcha request chain to a JSONL file — a protocol-spike
     aid, active only when EL_CAPTURE=<path> is set. Records non-GET requests (the
@@ -168,6 +184,8 @@ class CamoufoxStrategy:
         # generated fingerprint internally consistent; without this the default
         # pins one OS profile and successive launches look near-identical.
         launch["os"] = ["windows", "macos", "linux"]
+        if rcfg.get("block_assets", True):
+            launch["firefox_user_prefs"] = _bandwidth_prefs()  # save metered bandwidth
         cam_proxy = _camoufox_proxy(proxy_url)
         if cam_proxy:
             launch["proxy"] = cam_proxy
