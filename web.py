@@ -382,6 +382,8 @@ def do_save_config(temp_email: dict, pool_target, register: dict | None = None,
                 px["cooldown_secs"] = int(proxy["cooldown_secs"] or 900)
             if "strict" in proxy:
                 px["strict"] = bool(proxy["strict"])
+            if "route_bypass" in proxy:
+                px["route_bypass"] = bool(proxy["route_bypass"])
             data["proxy"] = px
         CONFIG_PATH.write_text(_dump_toml(data), encoding="utf-8")
     return build_state()

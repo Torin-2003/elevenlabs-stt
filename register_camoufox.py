@@ -51,6 +51,25 @@ def _camoufox_proxy(url: str | None) -> dict[str, str] | None:
     return proxy
 
 
+def _pick_unused_session(base_url: str, used_ips: set[str], build_url, fetch_ip,
+                         tries: int = 3) -> tuple[str | None, str | None]:
+    """Choose a sticky-session proxy URL whose exit IP isn't already used.
+
+    Returns (proxy_url, exit_ip). Re-rolls the {session} token up to `tries`
+    times for residential pools (only those can rotate to a fresh IP); returns
+    the last attempt even if still used (caller warns). `exit_ip` is None when
+    probing failed — dedup is then skipped (best-effort, never blocks a run)."""
+    url = build_url(base_url)
+    ip = fetch_ip(url)
+    can_reroll = "{session}" in (base_url or "")
+    n = 1
+    while can_reroll and ip is not None and ip in used_ips and n < tries:
+        url = build_url(base_url)
+        ip = fetch_ip(url)
+        n += 1
+    return url, ip
+
+
 class CamoufoxStrategy:
     """Real stealth browser + selector automation; ignores `captcha` unless a
     visible challenge appears (extension point, not wired yet)."""
@@ -70,15 +89,33 @@ class CamoufoxStrategy:
         picked = proxy_driver.pick()
         if picked is None and proxy_driver.has_proxies:
             stt._rlog("警告：所有代理已禁用，本次直连注册")
-        # one sticky IP for this whole registration (browser + API calls)
-        proxy_url = _proxy.with_session(picked.url) if picked else None
 
-        # route-bypass: under a global VPN (Shadowrocket), route the proxy's real
-        # IP via the physical gateway so it's reachable (see proxy_route).
-        routed_ip = None
-        if proxy_url and stt.proxy_config().get("route_bypass"):
-            import proxy_route
-            proxy_url, routed_ip = proxy_route.prepare(proxy_url)
+        # Build a concrete sticky-session proxy URL, applying route-bypass so the
+        # proxy is reachable under a global VPN (Shadowrocket). The route is
+        # set-once per host (idempotent, torn down at process exit — see
+        # proxy_route), so a whole batch only sudo's once.
+        route_on = bool(stt.proxy_config().get("route_bypass"))
+
+        def _build_url(base: str) -> str:
+            url = _proxy.with_session(base)
+            if url and route_on:
+                import proxy_route
+                url, _ = proxy_route.prepare(url)
+            return url
+
+        # one sticky IP for this whole registration (browser + API calls);
+        # dedup: prefer a session whose exit IP hasn't registered before
+        # (residential {session} pools re-roll for a fresh IP).
+        proxy_url: str | None = None
+        exit_ip: str | None = None
+        if picked:
+            used_ips = stt.used_exit_ips()
+            proxy_url, exit_ip = _pick_unused_session(
+                picked.url, used_ips, _build_url, stt.exit_ip)
+            if exit_ip and exit_ip in used_ips:
+                stt._rlog(f"警告：出口 IP {exit_ip} 已用过，继续注册")
+            elif exit_ip:
+                stt._rlog(f"代理出口 IP: {exit_ip}")
 
         launch: dict[str, Any] = {"headless": headless}
         cam_proxy = _camoufox_proxy(proxy_url)
@@ -144,6 +181,8 @@ class CamoufoxStrategy:
             with stt.authed_client(account, save=lambda _s: None, proxy=proxy_url) as client:
                 client.get("/v1/user")
                 stt.refresh_credits(account, client)
+            if exit_ip:
+                account["exit_ip"] = exit_ip  # recorded for used-IP dedup
             stt._rlog(f"注册完成: {email}，剩余积分 {stt.cached_remaining(account)}")
             if picked:
                 proxy_driver.mark_ok(picked)
@@ -152,7 +191,3 @@ class CamoufoxStrategy:
             if picked:
                 proxy_driver.mark_fail(picked)
             raise
-        finally:
-            if routed_ip:
-                import proxy_route
-                proxy_route.cleanup(routed_ip)

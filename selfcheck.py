@@ -352,6 +352,11 @@ def run() -> int:
     _check_register_orchestration()
     _check_mac_chrome_discovery()
     _check_proxy_threading()
+    _check_with_session_residential()
+    _check_proxy_route_idempotent()
+    _check_do_save_config_route_bypass()
+    _check_used_exit_ips()
+    _check_exit_ip_dedup_reroll()
 
     print("selfcheck ok")
     return 0
@@ -709,6 +714,114 @@ def _check_proxy_threading() -> None:
     finally:
         httpx.Client = orig
     assert captured.get("proxy") is None, "no proxy kwarg means direct (no proxy passed to httpx)"
+
+
+def _check_with_session_residential() -> None:
+    from urllib.parse import urlparse
+    # residential: one line with {session} rotates the IP per account; host/port
+    # stay fixed, only the session token changes.
+    base = "http://user-session-{session}:pass@gate.decodo.com:7000"
+    a = proxy.with_session(base)
+    b = proxy.with_session(base)
+    assert "{session}" not in a and "{session}" not in b, "placeholder must be filled"
+    assert a != b, "each call must yield a fresh session token"
+    ua, ub = urlparse(a), urlparse(b)
+    assert ua.hostname == ub.hostname == "gate.decodo.com"
+    assert ua.port == ub.port == 7000, "host/port stay fixed; only session rotates"
+
+
+def _check_proxy_route_idempotent() -> None:
+    import proxy_route
+    if sys.platform != "darwin":
+        return  # route-bypass is macOS-only; prepare() no-ops elsewhere
+    saved = (proxy_route._route, proxy_route.doh_resolve, proxy_route.real_gateway)
+    calls: list = []
+    proxy_route._ROUTED.clear()
+    proxy_route._HOST_IP.clear()
+    # multi A-record host in rotating order: must still route once (pin by host)
+    proxy_route._route = lambda action, ip, gw=None: calls.append((action, ip)) or True
+    proxy_route.doh_resolve = lambda host: ["203.0.113.9", "203.0.113.4", "203.0.113.7"]
+    proxy_route.real_gateway = lambda: "192.168.5.1"
+    try:
+        u1, ip1 = proxy_route.prepare("http://u:p@gate.example:7000")
+        u2, ip2 = proxy_route.prepare("http://u-session-abc:p@gate.example:7000")
+        assert ip1 == ip2 == "203.0.113.4", (ip1, ip2)  # sorted()[0], stable
+        assert u1 == "http://u:p@203.0.113.4:7000", u1
+        adds = [c for c in calls if c[0] == "add"]
+        assert len(adds) == 1, f"route add must be once per host, got {calls}"
+        proxy_route.cleanup_all()
+        assert ("delete", "203.0.113.4") in calls, "cleanup_all must delete the route"
+        assert proxy_route._ROUTED == {} and proxy_route._HOST_IP == {}, "caches cleared"
+    finally:
+        proxy_route._route, proxy_route.doh_resolve, proxy_route.real_gateway = saved
+        proxy_route._ROUTED.clear()
+        proxy_route._HOST_IP.clear()
+
+
+def _check_do_save_config_route_bypass() -> None:
+    import web
+    saved_cfg, saved_bs = web.CONFIG_PATH, web.build_state
+    tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="stt-cfg-"))
+    tmp = tmpdir / "config.toml"
+    web.CONFIG_PATH = tmp
+    web.build_state = lambda: {}  # isolate: skip account machinery
+    try:
+        web.do_save_config({}, None, proxy={"route_bypass": True})
+        assert stt.proxy_config(tmp)["route_bypass"] is True, "route_bypass True must persist"
+        web.do_save_config({}, None, proxy={"route_bypass": False})
+        assert stt.proxy_config(tmp)["route_bypass"] is False, "route_bypass False must persist"
+    finally:
+        web.CONFIG_PATH, web.build_state = saved_cfg, saved_bs
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _check_used_exit_ips() -> None:
+    saved = stt.ACCOUNTS_PATH
+    tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="stt-acc-"))
+    tmp = tmpdir / "accounts.json"
+    tmp.write_text(json.dumps({"accounts": [
+        {"email": "a", "exit_ip": "1.1.1.1"},
+        {"email": "b", "exit_ip": "2.2.2.2"},
+        {"email": "c"},  # no exit_ip recorded
+    ], "active": None}), encoding="utf-8")
+    stt.ACCOUNTS_PATH = tmp
+    try:
+        assert stt.used_exit_ips() == {"1.1.1.1", "2.2.2.2"}, stt.used_exit_ips()
+    finally:
+        stt.ACCOUNTS_PATH = saved
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _check_exit_ip_dedup_reroll() -> None:
+    import register_camoufox as rc
+    # residential {session}: re-roll until the exit IP is unused
+    seq = iter(["9.9.9.9", "9.9.9.9", "8.8.8.8"])  # first two used, third fresh
+    built: list = []
+
+    def build(base):
+        u = rc._proxy.with_session(base)
+        built.append(u)
+        return u
+
+    _, ip = rc._pick_unused_session(
+        "http://u-session-{session}:p@g:7000", {"9.9.9.9"}, build, lambda _u: next(seq))
+    assert ip == "8.8.8.8", f"should re-roll to an unused IP, got {ip}"
+    assert len(built) == 3, f"expected 3 attempts, got {len(built)}"
+    assert len(set(built)) == 3, "each re-roll must use a fresh session token"
+
+    # fixed IP (no {session}): never re-roll, even if the IP is already used
+    built2: list = []
+    _, ip2 = rc._pick_unused_session(
+        "http://u:p@1.2.3.4:8000", {"5.5.5.5"},
+        lambda b: (built2.append(b), b)[1], lambda _u: "5.5.5.5")
+    assert ip2 == "5.5.5.5" and len(built2) == 1, "fixed IP must not re-roll"
+
+    # probe failure (None) → skip dedup, single attempt (never blocks a run)
+    built3: list = []
+    _, ip3 = rc._pick_unused_session(
+        "http://u-session-{session}:p@g:7000", {"9.9.9.9"},
+        lambda b: (built3.append(b), rc._proxy.with_session(b))[1], lambda _u: None)
+    assert ip3 is None and len(built3) == 1, "probe failure must not loop"
 
 
 if __name__ == "__main__":

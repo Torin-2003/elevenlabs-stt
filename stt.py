@@ -163,6 +163,36 @@ def proxy_config(path: pathlib.Path = CONFIG_PATH) -> dict[str, Any]:
     return cfg
 
 
+def exit_ip(proxy: str | None = None) -> str | None:
+    """Probe the current egress IPv4 (through `proxy` if given). Returns None on
+    any failure — this is a best-effort dedup signal and must never block a
+    registration. Uses the same sticky proxy URL the browser will use, so the
+    measured IP equals the account's real exit IP."""
+    try:
+        kwargs: dict[str, Any] = {"timeout": 15}
+        if proxy:  # httpx 0.28: singular `proxy=`
+            kwargs["proxy"] = proxy
+        with httpx.Client(**kwargs) as client:
+            r = client.get("https://ipv4.icanhazip.com")
+        ip = (r.text or "").strip()
+        parts = ip.split(".")
+        if len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+            return ip
+        return None
+    except Exception:
+        return None
+
+
+def used_exit_ips() -> set[str]:
+    """Exit IPs already recorded on pool accounts — for skipping/warning on reuse
+    (ElevenLabs/hCaptcha flag many accounts from one IP)."""
+    try:
+        accts = load_accounts()["accounts"]
+    except Exception:
+        return set()
+    return {a["exit_ip"] for a in accts if a.get("exit_ip")}
+
+
 def resolve_language(value: str) -> str | None:
     """Return ISO 639-3 code (None for auto) or raise ValueError."""
     v = value.strip().lower()
